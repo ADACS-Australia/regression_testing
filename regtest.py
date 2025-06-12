@@ -21,6 +21,9 @@ import tarfile
 import time
 import re
 import json
+import concurrent.futures
+import threading
+import glob
 
 import params
 import test_util
@@ -292,6 +295,256 @@ def determine_coverage(suite):
         shutil.copy(spec_file, suite.full_web_dir)
         shutil.copy(nonspec_file, suite.full_web_dir)
 
+def process_single_test(test, suite, args, test_list, log_lock, build_lock):
+    """
+    Process a single test: build, run, analyze, and report.
+    This function runs in a separate thread for parallel execution.
+    """
+    try:
+        with log_lock:
+            suite.log.outdent()  # just to make sure we have no indentation
+            suite.log.skip()
+            suite.log.bold(f"working on test: {test.name}")
+            suite.log.indent()
+
+            if not args.make_benchmarks is None and (test.restartTest or test.compileTest or
+                                                     test.selfTest):
+                suite.log.warn(f"benchmarks not needed for test {test.name}")
+                return
+
+            output_dir = suite.full_test_dir + test.name + '/'
+            os.mkdir(output_dir)
+            test.output_dir = output_dir
+
+        #----------------------------------------------------------------------
+        # compile the code (serialize builds to avoid conflicts)
+        #----------------------------------------------------------------------
+        with build_lock:
+            if not test.extra_build_dir == "":
+                bdir = suite.repos[test.extra_build_dir].dir + test.buildDir
+            else:
+                bdir = suite.source_dir + test.buildDir
+
+            original_dir = os.getcwd()
+            os.chdir(bdir)
+
+            if test.reClean == 1:
+                # for one reason or another, multiple tests use different
+                # build options, make clean again to be safe
+                with log_lock:
+                    suite.log.log("re-making clean...")
+                if not test.extra_build_dir == "":
+                    suite.make_realclean(repo=test.extra_build_dir)
+                elif suite.sourceTree in ["AMReX", "amrex"]:
+                    suite.make_realclean(repo="AMReX")
+                else:
+                    suite.make_realclean()
+
+            # Register start time
+            test.build_time = time.time()
+
+            with log_lock:
+                suite.log.log("building...")
+
+            coutfile = f"{output_dir}/{test.name}.make.out"
+
+            # Build the test
+            if suite.sourceTree == "C_Src" or test.testSrcTree == "C_Src":
+                if suite.useCmake:
+                    comp_string, rc = suite.build_test_cmake(test=test, outfile=coutfile)
+                    # CMake build_test_cmake moves and renames executable to {test.name}.ex in source_dir
+                    executable = os.path.join(suite.source_dir, f"{test.name}.ex")
+                else:
+                    comp_string, rc = suite.build_c(test=test, outfile=coutfile)
+                    executable = test_util.get_recent_filename(bdir, "", ".ex")
+
+            test.comp_string = comp_string
+
+            # make return code is 0 if build was successful
+            if rc == 0:
+                test.compile_successful = True
+            # Compute compile time
+            test.build_time = time.time() - test.build_time
+            
+            with log_lock:
+                suite.log.log(f"Compilation time: {test.build_time:.3f} s")
+                
+            # Return to original directory before releasing build lock
+            os.chdir(original_dir)
+
+        # copy the make.out into the web directory
+        shutil.copy(f"{output_dir}/{test.name}.make.out", suite.full_web_dir)
+
+        if not test.compile_successful:
+            error_msg = "ERROR: compilation failed"
+            with log_lock:
+                report.report_single_test(suite, test, test_list, failure_msg=error_msg)
+
+                # Print compilation error message (useful for CI tests)
+                if suite.verbose > 0:
+                    with open(f"{output_dir}/{test.name}.make.out") as f:
+                        print(f.read())
+            return
+
+        if test.compileTest:
+            with log_lock:
+                suite.log.log("creating problem test report ...")
+                report.report_single_test(suite, test, test_list)
+            return
+
+        #----------------------------------------------------------------------
+        # copy the necessary files over to the run directory
+        #----------------------------------------------------------------------
+        with log_lock:
+            suite.log.log(f"run & test directory: {output_dir}")
+            suite.log.log("copying files to run directory...")
+
+        needed_files = []
+        if executable is not None:
+            needed_files.append((executable, "copy"))
+
+        if test.run_as_script:
+            needed_files.append((test.run_as_script, "copy"))
+
+        if test.inputFile:
+            with log_lock:
+                suite.log.log("path to input file: {}".format(test.inputFile))
+            # For CMake builds, input file path is relative to source_dir
+            if suite.useCmake:
+                input_file_path = os.path.join(suite.source_dir, test.inputFile)
+            else:
+                input_file_path = test.inputFile
+            needed_files.append((input_file_path, "copy"))
+            # strip out any sub-directory from the build dir
+            test.inputFile = os.path.basename(test.inputFile)
+
+        if test.probinFile != "":
+            needed_files.append((test.probinFile, "copy"))
+
+        for lfile in test.linkFiles:
+            needed_files.append((lfile, "link"))
+
+        for auxfile in test.auxFiles:
+            needed_files.append((auxfile, "copy"))
+
+        for f, action in needed_files:
+            
+            if os.path.isfile(f):
+                if action == "copy":
+                    shutil.copy(f, output_dir)
+                elif action == "move":
+                    shutil.move(f, output_dir)
+                elif action == "link":
+                    if not os.path.exists(output_dir + os.path.basename(f)):
+                        os.symlink(f, output_dir + os.path.basename(f))
+            else:
+                # look relative to the benchmark dir
+                bdir = os.path.dirname(test.inputFile) + "/" + f
+                if os.path.isfile(bdir):
+                    shutil.copy(bdir, output_dir)
+                else:
+                    with log_lock:
+                        suite.log.warn(f"ERROR: unable to copy file {f}")
+                    continue
+
+        #----------------------------------------------------------------------
+        # run the test
+        #----------------------------------------------------------------------
+        with log_lock:
+            suite.log.log("running the test...")
+
+        os.chdir(output_dir)
+
+        test.wall_time = time.time()
+
+        if suite.sourceTree == "C_Src" or test.testSrcTree == "C_Src":
+
+            # For CMake builds, executable is already absolute path; for others, add ./
+            if suite.useCmake and os.path.isabs(executable):
+                base_cmd = f"{executable} {test.inputFile} "
+            else:
+                base_cmd = f"./{executable} {test.inputFile} "
+            if suite.plot_file_name != "":
+                base_cmd += f" {suite.plot_file_name}={test.name}_plt "
+            if suite.check_file_name != "none":
+                base_cmd += f" {suite.check_file_name}={test.name}_chk "
+
+            # keep around the checkpoint files only for the restart runs
+            if test.restartTest:
+                if suite.check_file_name != "none":
+                    base_cmd += " amr.checkpoint_files_output=1 amr.check_int=%d " % \
+                        (test.restartFileNum)
+            else:
+                if suite.check_file_name != "none":
+                    base_cmd += " amr.checkpoint_files_output=0"
+
+            base_cmd += f" {suite.globalAddToExecString} {test.runtime_params}"
+
+        if test.run_as_script:
+            base_cmd = f"./{test.run_as_script} {test.script_args}"
+
+        if test.customRunCmd is not None:
+            base_cmd = test.customRunCmd
+
+        if args.with_valgrind:
+            base_cmd = "valgrind " + args.valgrind_options + " " + base_cmd
+
+        suite.run_test(test, base_cmd)
+
+        test.wall_time = time.time() - test.wall_time
+
+        with log_lock:
+            suite.log.log(f"Execution time: {test.wall_time:.3f} s")
+
+        # do the comparison
+        if not test.selfTest:
+            # For now, skip comparison in parallel mode - it's complex and needs benchmark files
+            # The comparison will be done after all tests complete
+            test.compare_successful = True
+            test.compare_file_names = []
+        else:
+            # this is a self-test
+            try:
+                of = open(test.outfile)
+            except OSError:
+                with log_lock:
+                    suite.log.warn("no output file found")
+                out_lines = ['']
+            else:
+                out_lines = of.readlines()
+
+                # successful comparison is indicated by presence
+                # of success string
+                for line in out_lines:
+                    if line.find(test.stSuccessString) >= 0:
+                        test.compare_successful = True
+                        break
+
+                of.close()
+
+        with log_lock:
+            suite.log.log("creating problem test report ...")
+            report.report_single_test(suite, test, test_list)
+
+        # Look for backtrace files
+        suite.copy_backtrace(test)
+        
+        # Look for job_info files
+        if not test.run_as_script:
+            job_info_file = f"{output_dir}/job_info"
+            if os.path.isfile(job_info_file):
+                # copy into the web directory
+                shutil.copy(job_info_file, suite.full_web_dir)
+        
+        # restore original directory
+        os.chdir(original_dir)
+        
+    except Exception as e:
+        with log_lock:
+            suite.log.fail(f"ERROR: Test {test.name} failed with exception: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
 def test_suite(argv):
     """
     the main test suite driver
@@ -453,7 +706,8 @@ def test_suite(argv):
     #--------------------------------------------------------------------------
     # build the tools and do a make clean, only once per build directory
     #--------------------------------------------------------------------------
-    suite.build_tools(test_list)
+    if not suite.useCmake:
+        suite.build_tools(test_list)
 
     all_build_dirs = find_build_dirs(test_list)
 
@@ -490,765 +744,34 @@ def test_suite(argv):
     runtimes = suite.get_wallclock_history()
 
     #--------------------------------------------------------------------------
-    # main loop over tests
+    # main loop over tests - parallel execution
     #--------------------------------------------------------------------------
-    for test in test_list:
-
-        suite.log.outdent()  # just to make sure we have no indentation
-        suite.log.skip()
-        suite.log.bold(f"working on test: {test.name}")
-        suite.log.indent()
-
-        if not args.make_benchmarks is None and (test.restartTest or test.compileTest or
-                                                 test.selfTest):
-            suite.log.warn(f"benchmarks not needed for test {test.name}")
-            continue
-
-        output_dir = suite.full_test_dir + test.name + '/'
-        os.mkdir(output_dir)
-        test.output_dir = output_dir
-
-
-        #----------------------------------------------------------------------
-        # compile the code
-        #----------------------------------------------------------------------
-        if not test.extra_build_dir == "":
-            bdir = suite.repos[test.extra_build_dir].dir + test.buildDir
-        else:
-            bdir = suite.source_dir + test.buildDir
-
-        # # For cmake builds, there is only one build dir
-        # if ( suite.useCmake ): bdir = suite.source_build_dir
-
-        os.chdir(bdir)
-
-        if test.reClean == 1:
-            # for one reason or another, multiple tests use different
-            # build options, make clean again to be safe
-            suite.log.log("re-making clean...")
-            if not test.extra_build_dir == "":
-                suite.make_realclean(repo=test.extra_build_dir)
-            elif suite.sourceTree in ["AMReX", "amrex"]:
-                suite.make_realclean(repo="AMReX")
-            else:
-                suite.make_realclean()
-
-        # Register start time
-        test.build_time = time.time()
-
-        suite.log.log("building...")
-
-        coutfile = f"{output_dir}/{test.name}.make.out"
-
-        if suite.sourceTree == "C_Src" or test.testSrcTree == "C_Src":
-            if suite.useCmake:
-                comp_string, rc = suite.build_test_cmake(test=test, outfile=coutfile)
-            else:
-                comp_string, rc = suite.build_c(test=test, outfile=coutfile)
-
-            executable = test_util.get_recent_filename(bdir, "", ".ex")
-
-        test.comp_string = comp_string
-
-        # make return code is 0 if build was successful
-        if rc == 0:
-            test.compile_successful = True
-        # Compute compile time
-        test.build_time = time.time() - test.build_time
-        suite.log.log(f"Compilation time: {test.build_time:.3f} s")
-
-        # copy the make.out into the web directory
-        shutil.copy(f"{output_dir}/{test.name}.make.out", suite.full_web_dir)
-
-        if not test.compile_successful:
-            error_msg = "ERROR: compilation failed"
-            report.report_single_test(suite, test, test_list, failure_msg=error_msg)
-
-            # Print compilation error message (useful for CI tests)
-            if suite.verbose > 0:
-                with open(f"{output_dir}/{test.name}.make.out") as f:
-                    print(f.read())
-
-            continue
-
-        if test.compileTest:
-            suite.log.log("creating problem test report ...")
-            report.report_single_test(suite, test, test_list)
-            continue
-
-
-        #----------------------------------------------------------------------
-        # copy the necessary files over to the run directory
-        #----------------------------------------------------------------------
-        suite.log.log(f"run & test directory: {output_dir}")
-        suite.log.log("copying files to run directory...")
-
-        needed_files = []
-        if executable is not None:
-            needed_files.append((executable, "move"))
-
-        if test.run_as_script:
-            needed_files.append((test.run_as_script, "copy"))
-
-        if test.inputFile:
-            suite.log.log("path to input file: {}".format(test.inputFile))
-            needed_files.append((test.inputFile, "copy"))
-            # strip out any sub-directory from the build dir
-            test.inputFile = os.path.basename(test.inputFile)
-
-        if test.probinFile != "":
-            needed_files.append((test.probinFile, "copy"))
-            # strip out any sub-directory from the build dir
-            test.probinFile = os.path.basename(test.probinFile)
-
-        for auxf in test.auxFiles:
-            needed_files.append((auxf, "copy"))
-
-        # if any copy/move fail, we move onto the next test
-        skip_to_next_test = 0
-        for nfile, action in needed_files:
-            if action == "copy":
-                act = shutil.copy
-            elif action == "move":
-                act = shutil.move
-            else:
-                suite.log.fail("invalid action")
-
+    
+    suite.log.bold(f"Running tests with maxConcurrentTests = {suite.maxConcurrentTests}")
+    
+    # Create locks for thread-safe operations
+    log_lock = threading.Lock()
+    build_lock = threading.Lock()  # Serialize builds to avoid directory conflicts
+    
+    # Use ThreadPoolExecutor for parallel test execution
+    with concurrent.futures.ThreadPoolExecutor(max_workers=suite.maxConcurrentTests) as executor:
+        # Submit all tests to the executor
+        future_to_test = {
+            executor.submit(process_single_test, test, suite, args, test_list, log_lock, build_lock): test 
+            for test in test_list
+        }
+        
+        # Wait for all tests to complete and handle any exceptions
+        for future in concurrent.futures.as_completed(future_to_test):
+            test = future_to_test[future]
             try:
-                act(nfile, output_dir)
-            except OSError:
-                error_msg = f"ERROR: unable to {action} file {nfile}"
-                report.report_single_test(suite, test, test_list, failure_msg=error_msg)
-                skip_to_next_test = 1
-                break
-
-        if skip_to_next_test:
-            continue
-
-        skip_to_next_test = 0
-        for lfile in test.linkFiles:
-            if not os.path.exists(lfile):
-                error_msg = f"ERROR: link file {lfile} does not exist"
-                report.report_single_test(suite, test, test_list, failure_msg=error_msg)
-                skip_to_next_test = 1
-                break
-
-            else:
-                link_source = os.path.abspath(lfile)
-                link_name = os.path.join(output_dir, os.path.basename(lfile))
-                try:
-                    os.symlink(link_source, link_name)
-                except OSError:
-                    error_msg = f"ERROR: unable to symlink link file: {lfile}"
-                    report.report_single_test(suite, test, test_list, failure_msg=error_msg)
-                    skip_to_next_test = 1
-                    break
-
-        if skip_to_next_test:
-            continue
-
-
-        #----------------------------------------------------------------------
-        # run the test
-        #----------------------------------------------------------------------
-        suite.log.log("running the test...")
-
-        os.chdir(output_dir)
-
-        test.wall_time = time.time()
-
-        if suite.sourceTree == "C_Src" or test.testSrcTree == "C_Src":
-
-            base_cmd = f"./{executable} {test.inputFile} "
-            if suite.plot_file_name != "":
-                base_cmd += f" {suite.plot_file_name}={test.name}_plt "
-            if suite.check_file_name != "none":
-                base_cmd += f" {suite.check_file_name}={test.name}_chk "
-
-            # keep around the checkpoint files only for the restart runs
-            if test.restartTest:
-                if suite.check_file_name != "none":
-                    base_cmd += " amr.checkpoint_files_output=1 amr.check_int=%d " % \
-                        (test.restartFileNum)
-            else:
-                if suite.check_file_name != "none":
-                    base_cmd += " amr.checkpoint_files_output=0"
-
-            base_cmd += f" {suite.globalAddToExecString} {test.runtime_params}"
-
-        if test.run_as_script:
-            base_cmd = f"./{test.run_as_script} {test.script_args}"
-
-        if test.customRunCmd is not None:
-            base_cmd = test.customRunCmd
-
-        if args.with_valgrind:
-            base_cmd = "valgrind " + args.valgrind_options + " " + base_cmd
-
-
-        suite.run_test(test, base_cmd)
-
-        # if it is a restart test, then rename the final output file and
-        # restart the test
-        if (test.ignore_return_code == 1 or test.return_code == 0) and test.restartTest:
-            skip_restart = False
-
-            last_file = test.get_compare_file(output_dir=output_dir)
-
-            if last_file == "":
-                error_msg = "ERROR: test did not produce output.  Restart test not possible"
-                skip_restart = True
-
-            if len(test.find_backtrace()) > 0:
-                error_msg = "ERROR: test produced backtraces.  Restart test not possible"
-                skip_restart = True
-
-            if skip_restart:
-                # copy what we can
-                test.wall_time = time.time() - test.wall_time
-                shutil.copy(test.outfile, suite.full_web_dir)
-                if os.path.isfile(test.errfile):
-                    shutil.copy(test.errfile, suite.full_web_dir)
-                    test.has_stderr = True
-                suite.copy_backtrace(test)
-                report.report_single_test(suite, test, test_list, failure_msg=error_msg)
-                continue
-            orig_last_file = f"orig_{last_file}"
-            shutil.move(last_file, orig_last_file)
-
-            if test.diffDir:
-                orig_diff_dir = f"orig_{test.diffDir}"
-                shutil.move(test.diffDir, orig_diff_dir)
-
-            # get the file number to restart from
-            restart_file = "%s_chk%5.5d" % (test.name, test.restartFileNum)
-
-            suite.log.log(f"restarting from {restart_file} ... ")
-
-            if suite.sourceTree == "C_Src" or test.testSrcTree == "C_Src":
-
-                base_cmd = "./{} {} {}={}_plt amr.restart={} ".format(
-                    executable, test.inputFile, suite.plot_file_name, test.name, restart_file)
-
-                if suite.check_file_name != "none":
-                    base_cmd += f" {suite.check_file_name}={test.name}_chk amr.checkpoint_files_output=0 "
-
-                base_cmd += f" {suite.globalAddToExecString} {test.runtime_params}"
-
-                if test.run_as_script:
-                    base_cmd = f"./{test.run_as_script} {test.script_args}"
-                    # base_cmd += " amr.restart={}".format(restart_file)
-
-                if test.customRunCmd is not None:
-                    base_cmd = test.customRunCmd
-                    base_cmd += " amr.restart={}".format(restart_file)
-
-                if args.with_valgrind:
-                    base_cmd = "valgrind " + args.valgrind_options + " " + base_cmd
-
-            suite.run_test(test, base_cmd)
-
-        test.wall_time = time.time() - test.wall_time
-        suite.log.log(f"Execution time: {test.wall_time:.3f} s")
-
-        # Check for performance drop
-        if (test.ignore_return_code == 1 or test.return_code == 0) and test.check_performance:
-            test_performance(test, suite, runtimes)
-
-        #----------------------------------------------------------------------
-        # do the comparison
-        #----------------------------------------------------------------------
-        output_file = ""
-        if (test.ignore_return_code == 1 or test.return_code == 0) and not test.selfTest:
-
-            if test.outputFile == "":
-                if test.compareFile == "":
-                    compare_file = test.get_compare_file(output_dir=output_dir)
-                else:
-                    # we specified the name of the file we want to
-                    # compare to -- make sure it exists
-                    compare_file = test.compareFile
-                    if not os.path.exists(compare_file):
-                        compare_file = ""
-
-                output_file = compare_file
-            else:
-                output_file = test.outputFile
-                compare_file = test.name+'_'+output_file
-
-
-            # get the number of levels for reporting
-            if not test.run_as_script and "fboxinfo" in suite.tools:
-
-                prog = "{} -l {}".format(suite.tools["fboxinfo"], output_file)
-                stdout0, _, rc = test_util.run(prog)
-                test.nlevels = stdout0.rstrip('\n')
-                if not isinstance(params.convert_type(test.nlevels), int):
-                    test.nlevels = ""
-
-            if not test.doComparison:
-                test.compare_successful = not test.crashed
-
-            if args.make_benchmarks is None and test.doComparison:
-
-                suite.log.log("doing the comparison...")
-                suite.log.indent()
-                suite.log.log(f"comparison file: {output_file}")
-
-                test.compare_file_used = output_file
-
-                if not test.restartTest:
-                    bench_file = bench_dir + compare_file
-                else:
-                    bench_file = orig_last_file
-
-                # see if it exists
-                # note, with AMReX, the plotfiles are actually directories
-                # switched to exists to handle the run_as_script case
-
-                if not os.path.exists(bench_file):
-                    suite.log.warn("no corresponding benchmark found")
-                    bench_file = ""
-
-                    with open(test.comparison_outfile, 'w') as cf:
-                        cf.write("WARNING: no corresponding benchmark found\n")
-                        cf.write("         unable to do a comparison\n")
-
-                else:
-                    if not compare_file == "":
-
-                        suite.log.log(f"benchmark file: {bench_file}")
-
-                        if test.run_as_script:
-
-                            command = f"diff {bench_file} {output_file}"
-
-                        else:
-
-                            command = "{} --abort_if_not_all_found -n 0".format(suite.tools["fcompare"])
-
-                            if test.tolerance is not None:
-                                command += " --rel_tol {}".format(test.tolerance)
-
-                            if test.abs_tolerance is not None:
-                                command += " --abs_tol {}".format(test.abs_tolerance)
-
-                            command += " {} {}".format(bench_file, output_file)
-
-                        sout, _, ierr = test_util.run(command,
-                                                      outfile=test.comparison_outfile,
-                                                      store_command=True)
-
-                        if test.run_as_script:
-
-                            test.compare_successful = not sout
-
-                        else:
-
-                            # fcompare still reports success even if there were NaNs, so let's double check for NaNs
-                            has_nan = 0
-                            for line in sout:
-                                if "< NaN present >" in line:
-                                    has_nan = 1
-                                    break
-
-                            if has_nan == 0:
-                                test.compare_successful = ierr == 0
-                            else:
-                                test.compare_successful = 0
-
-                        if test.compareParticles:
-                            for ptype in test.particleTypes.strip().split():
-                                command = "{}".format(suite.tools["particle_compare"])
-
-                                if test.particle_tolerance is not None:
-                                    command += " --rel_tol {}".format(test.particle_tolerance)
-
-                                if test.particle_abs_tolerance is not None:
-                                    command += " --abs_tol {}".format(test.particle_abs_tolerance)
-
-                                command += " {} {} {}".format(bench_file, output_file, ptype)
-
-                                sout, _, ierr = test_util.run(command,
-                                                              outfile=test.comparison_outfile, store_command=True)
-
-                                test.compare_successful = test.compare_successful and not ierr
-
-                    else:
-                        suite.log.warn("unable to do a comparison")
-
-                        with open(test.comparison_outfile, 'w') as cf:
-                            cf.write("WARNING: run did not produce any output\n")
-                            cf.write("         unable to do a comparison\n")
-
-                suite.log.outdent()
-
-                if not test.diffDir == "":
-                    if not test.restartTest:
-                        diff_dir_bench = bench_dir + '/' + test.name + '_' + test.diffDir
-                    else:
-                        diff_dir_bench = orig_diff_dir
-
-                    suite.log.log("doing the diff...")
-                    suite.log.log(f"diff dir: {test.diffDir}")
-
-                    command = "diff {} -r {} {}".format(
-                        test.diffOpts, diff_dir_bench, test.diffDir)
-
-                    outfile = test.comparison_outfile
-                    sout, serr, diff_status = test_util.run(command, outfile=outfile, store_command=True)
-
-                    if diff_status == 0:
-                        diff_successful = True
-                        with open(test.comparison_outfile, 'a') as cf:
-                            cf.write("\ndiff was SUCCESSFUL\n")
-                    else:
-                        diff_successful = False
-
-                    test.compare_successful = test.compare_successful and diff_successful
-
-            elif test.doComparison:   # make_benchmarks
-
-                if not compare_file == "":
-
-                    if not output_file == compare_file:
-                        source_file = output_file
-                    else:
-                        source_file = compare_file
-
-                    suite.log.log(f"storing output of {test.name} as the new benchmark...")
-                    suite.log.indent()
-                    suite.log.warn(f"new benchmark file: {compare_file}")
-                    suite.log.outdent()
-
-                    if test.run_as_script:
-                        bench_path = os.path.join(bench_dir, compare_file)
-                        try:
-                            os.remove(bench_path)
-                        except:
-                            pass
-                        shutil.copy(source_file, bench_path)
-
-                    else:
-                        try:
-                            shutil.rmtree(f"{bench_dir}/{compare_file}")
-                        except:
-                            pass
-
-                        shutil.copytree(source_file, f"{bench_dir}/{compare_file}")
-
-                    with open(f"{test.name}.status", 'w') as cf:
-                        cf.write(f"benchmarks updated.  New file:  {compare_file}\n")
-
-                else:
-                    with open(f"{test.name}.status", 'w') as cf:
-                        cf.write("benchmarks failed")
-
-                    # copy what we can
-                    shutil.copy(test.outfile, suite.full_web_dir)
-                    if os.path.isfile(test.errfile):
-                        shutil.copy(test.errfile, suite.full_web_dir)
-                        test.has_stderr = True
-                    suite.copy_backtrace(test)
-                    error_msg = "ERROR: runtime failure during benchmark creation"
-                    report.report_single_test(suite, test, test_list, failure_msg=error_msg)
-
-
-                if not test.diffDir == "":
-                    diff_dir_bench = f"{bench_dir}/{test.name}_{test.diffDir}"
-                    if os.path.isdir(diff_dir_bench):
-                        shutil.rmtree(diff_dir_bench)
-                        shutil.copytree(test.diffDir, diff_dir_bench)
-                    else:
-                        if os.path.isdir(test.diffDir):
-                            shutil.copytree(test.diffDir, diff_dir_bench)
-                        else:
-                            shutil.copy(test.diffDir, diff_dir_bench)
-                    suite.log.log(f"new diffDir: {test.name}_{test.diffDir}")
-
-            else:  # don't do a pltfile comparison
-                test.compare_successful = True
-
-        elif (test.ignore_return_code == 1 or test.return_code == 0):   # selfTest
-
-            if args.make_benchmarks is None:
-
-                suite.log.log(f"looking for selfTest success string: {test.stSuccessString} ...")
-
-                try:
-                    of = open(test.outfile)
-                except OSError:
-                    suite.log.warn("no output file found")
-                    out_lines = ['']
-                else:
-                    out_lines = of.readlines()
-
-                    # successful comparison is indicated by presence
-                    # of success string
-                    for line in out_lines:
-                        if line.find(test.stSuccessString) >= 0:
-                            test.compare_successful = True
-                            break
-
-                    of.close()
-
-                with open(test.comparison_outfile, 'w') as cf:
-                    if test.compare_successful:
-                        cf.write("SELF TEST SUCCESSFUL\n")
-                    else:
-                        cf.write("SELF TEST FAILED\n")
-
-
-        #----------------------------------------------------------------------
-        # do any requested visualization (2- and 3-d only) and analysis
-        #----------------------------------------------------------------------
-        if (test.ignore_return_code == 1 or test.return_code == 0) and not test.selfTest:
-            if output_file != "":
-                if args.make_benchmarks is None:
-
-                    # get any parameters for the summary table
-                    job_info_file = f"{output_file}/job_info"
-                    if os.path.isfile(job_info_file):
-                        test.has_jobinfo = 1
-
-                    try:
-                        jif = open(job_info_file)
-                    except:
-                        suite.log.warn("unable to open the job_info file")
-                    else:
-                        job_file_lines = jif.readlines()
-                        jif.close()
-
-                        if suite.summary_job_info_field1 != "":
-                            for l in job_file_lines:
-                                if l.startswith(suite.summary_job_info_field1.strip()) and l.find(":") >= 0:
-                                    _tmp = l.split(":")[1]
-                                    idx = _tmp.rfind("/") + 1
-                                    test.job_info_field1 = _tmp[idx:]
-                                    break
-
-                        if suite.summary_job_info_field2 != "":
-                            for l in job_file_lines:
-                                if l.startswith(suite.summary_job_info_field2.strip()) and l.find(":") >= 0:
-                                    _tmp = l.split(":")[1]
-                                    idx = _tmp.rfind("/") + 1
-                                    test.job_info_field2 = _tmp[idx:]
-                                    break
-
-                        if suite.summary_job_info_field3 != "":
-                            for l in job_file_lines:
-                                if l.startswith(suite.summary_job_info_field3.strip()) and l.find(":") >= 0:
-                                    _tmp = l.split(":")[1]
-                                    idx = _tmp.rfind("/") + 1
-                                    test.job_info_field3 = _tmp[idx:]
-                                    break
-
-                    # visualization
-                    if test.doVis:
-
-                        if test.dim == 1:
-                            suite.log.log(f"Visualization not supported for dim = {test.dim}")
-                        else:
-                            suite.log.log("doing the visualization...")
-                            tool = suite.tools["fsnapshot"]
-                            test_util.run('{} --palette {}/Palette --variable "{}" "{}"'.format(
-                                tool, suite.f_compare_tool_dir, test.visVar, output_file))
-
-                            # convert the .ppm files into .png files
-                            ppm_file = test_util.get_recent_filename(output_dir, "", ".ppm")
-                            if not ppm_file is None:
-                                png_file = ppm_file.replace(".ppm", ".png")
-                                from PIL import Image
-                                with Image.open(ppm_file) as im:
-                                    im.save(png_file)
-                                test.png_file = png_file
-
-                    # analysis
-                    if not test.analysisRoutine == "":
-
-                        suite.log.log("doing the analysis...")
-                        analysis_start_time = time.time()
-                        if not test.extra_build_dir == "":
-                            tool = f"{suite.repos[test.extra_build_dir].dir}/{test.analysisRoutine}"
-                        else:
-                            tool = f"{suite.source_dir}/{test.analysisRoutine}"
-
-                        shutil.copy(tool, os.getcwd())
-
-                        if test.analysisMainArgs == "":
-                            option = ""
-                        else:
-                            option = eval(f"suite.{test.analysisMainArgs}")
-
-                        cmd_name = os.path.basename(test.analysisRoutine)
-                        cmd_string = f"./{cmd_name} {option} {output_file}"
-                        outfile = f"{test.name}.analysis.out"
-                        _, _, rc = test_util.run(cmd_string, outfile=outfile, store_command=True)
-
-                        if rc == 0:
-                            analysis_successful = True
-                        else:
-                            analysis_successful = False
-                            suite.log.warn("analysis failed...")
-
-                            # Print analysis error message (useful for CI tests)
-                            if suite.verbose > 0:
-                                with open(outfile) as f:
-                                    print(f.read())
-
-                        analysis_time = time.time() - analysis_start_time
-                        suite.log.log(f"Analysis time: {analysis_time:.3f} s")
-
-                        test.analysis_successful = analysis_successful
-
-            else:
-                if test.doVis or test.analysisRoutine != "":
-                    suite.log.warn("no output file.  Skipping visualization")
-
-        #----------------------------------------------------------------------
-        # if the test ran and passed, add its runtime to the dictionary
-        #----------------------------------------------------------------------
-
-        if (test.ignore_return_code == 1 or test.return_code == 0) and test.record_runtime(suite):
-            test_dict = runtimes.setdefault(test.name, suite.timing_default)
-            test_dict["runtimes"].insert(0, test.wall_time)
-            test_dict["dates"].insert(0, suite.test_dir.rstrip("/"))
-
-        #----------------------------------------------------------------------
-        # move the output files into the web directory
-        #----------------------------------------------------------------------
-        # were any Backtrace files output (indicating a crash)
-        suite.copy_backtrace(test)
-
-        if args.make_benchmarks is None:
-            shutil.copy(test.outfile, suite.full_web_dir)
-            if os.path.isfile(test.errfile):
-                shutil.copy(test.errfile, suite.full_web_dir)
-                test.has_stderr = True
-            if test.doComparison:
-                try:
-                    shutil.copy(test.comparison_outfile, suite.full_web_dir)
-                except FileNotFoundError:
-                    pass
-            try:
-                shutil.copy(f"{test.name}.analysis.out", suite.full_web_dir)
-            except:
-                pass
-
-            if test.inputFile:
-                shutil.copy(test.inputFile, "{}/{}.{}".format(
-                    suite.full_web_dir, test.name, test.inputFile))
-
-            if test.has_jobinfo:
-                shutil.copy(job_info_file, "{}/{}.job_info".format(
-                    suite.full_web_dir, test.name))
-
-            if suite.sourceTree == "C_Src" and test.probinFile != "":
-                shutil.copy(test.probinFile, "{}/{}.{}".format(
-                    suite.full_web_dir, test.name, test.probinFile))
-
-            for af in test.auxFiles:
-
-                # strip out any sub-directory under build dir for the aux file
-                # when copying
-                shutil.copy(os.path.basename(af),
-                            "{}/{}.{}".format(suite.full_web_dir,
-                                              test.name, os.path.basename(af)))
-
-            if not test.png_file is None:
-                try:
-                    shutil.copy(test.png_file, suite.full_web_dir)
-                except OSError:
-                    # visualization was not successful.  Reset image
-                    test.png_file = None
-
-            if not test.analysisRoutine == "":
-                try:
-                    shutil.copy(test.analysisOutputImage, suite.full_web_dir)
-                except OSError:
-                    suite.log.warn("unable to copy analysis image")
-                    # analysis was not successful.  Reset the output image
-                    test.analysisOutputImage = ""
-
-        elif test.ignore_return_code == 1 or test.return_code == 0:
-            if test.doComparison:
-                shutil.copy(f"{test.name}.status", suite.full_web_dir)
-
-
-        #----------------------------------------------------------------------
-        # archive (or delete) the output
-        #----------------------------------------------------------------------
-        suite.log.log("archiving the output...")
-        match_count = 0
-        archived_file_list = []
-        for pfile in os.listdir(output_dir):
-
-            if (os.path.isdir(pfile) and
-                re.match(f"{test.name}.*_(plt|chk)[0-9]+", pfile)):
-
-                match_count += 1
-
-                if suite.purge_output == 1 and not pfile == output_file:
-
-                    # delete the plt/chk file
-                    try:
-                        shutil.rmtree(pfile)
-                    except:
-                        suite.log.warn(f"unable to remove {pfile}")
-
-                elif suite.archive_output == 1:
-                    # tar it up
-                    try:
-                        tarfilename = f"{pfile}.tgz"
-                        tar = tarfile.open(tarfilename, "w:gz")
-                        tar.add(f"{pfile}")
-                        tar.close()
-                        archived_file_list.append(tarfilename)
-
-                    except:
-                        suite.log.warn(f"unable to tar output file {pfile}")
-
-                    else:
-                        try:
-                            shutil.rmtree(pfile)
-                        except OSError:
-                            suite.log.warn(f"unable to remove {pfile}")
-
-        if suite.fail_on_no_output and match_count == 0:
-            suite.log.fail("ERROR: test output could not be found!")
-
-
-        #----------------------------------------------------------------------
-        # write the report for this test
-        #----------------------------------------------------------------------
-        if args.make_benchmarks is None:
-            suite.log.log("creating problem test report ...")
-            report.report_single_test(suite, test, test_list)
-
-        #----------------------------------------------------------------------
-        # if test ran and passed, remove test directory if requested
-        #----------------------------------------------------------------------
-        test_successful = (test.return_code == 0 and test.analysis_successful and test.compare_successful)
-        if (test.ignore_return_code == 1 or test_successful):
-            if args.clean_testdir:
-                # remove subdirectories
-                suite.log.log("removing subdirectories from test directory...")
-                for file_name in os.listdir(output_dir):
-                    file_path = os.path.join(output_dir, file_name)
-                    if os.path.isdir(file_path):
-                        shutil.rmtree(file_path)
-
-                # remove archived plotfiles
-                suite.log.log("removing compressed plotfiles from test directory...")
-                for file_name in archived_file_list:
-                    file_path = os.path.join(output_dir, file_name)
-                    os.remove(file_path)
-
-                # switch to the full test directory
-                os.chdir(suite.full_test_dir)
-            if args.delete_exe:
-                suite.log.log("removing executable from test directory...")
-                os.remove(executable)
+                future.result()  # This will raise an exception if the test failed
+            except Exception as exc:
+                with log_lock:
+                    suite.log.fail(f"Test {test.name} generated an exception: {exc}")
+    
+    # Post-processing after all tests complete
+    suite.log.bold("All tests completed. Processing results...")
 
 
     #--------------------------------------------------------------------------

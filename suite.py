@@ -453,6 +453,7 @@ class Suite:
 
         self.MAKE = "gmake"
         self.numMakeJobs = 1
+        self.maxConcurrentTests = 1
 
         self.reportActiveTestsOnly = 0
         self.goUpLink = 0
@@ -1246,7 +1247,7 @@ class Suite:
         if self.source_build_dir == "":
             self.source_build_dir = path
 
-        cmd = f'{self.cmake} --build {self.source_build_dir} -j {self.numMakeJobs} -- {opts} {target}'
+        cmd = f'{self.cmake} --build {self.source_build_dir} --target {target} -j {self.numMakeJobs} {opts}'
         self.log.log(cmd)
         stdout, stderr, rc = test_util.run(cmd, outfile=coutfile, cwd=path, env=ENV )
 
@@ -1298,22 +1299,26 @@ class Suite:
             # Find location of executable
             path_to_exe = None
 
-            # search by target name
+            # search by target name in the entire build directory
             for root, dirnames, filenames in os.walk(self.source_build_dir):
                 if test.target in filenames:
-                    path_to_exe = os.path.join(root, test.target)
-                    break
+                    candidate_path = os.path.join(root, test.target)
+                    # Check if it's actually executable
+                    if os.access(candidate_path, os.X_OK) and not Path(candidate_path).is_symlink():
+                        path_to_exe = candidate_path
+                        break
 
             # fallback: pick first executable in CMake output directory
             if path_to_exe is None:
                 path_to_bin = None
                 cmake_output_dir = "CMAKE_RUNTIME_OUTPUT_DIRECTORY:PATH="
                 cmake_cache = os.path.join(self.source_build_dir, "CMakeCache.txt")
-                with open(cmake_cache) as cc:
-                    for ln in cc.readlines():
-                        if ln.startswith(cmake_output_dir):
-                            path_to_bin = ln[len(cmake_output_dir):].strip()
-                            break
+                if os.path.isfile(cmake_cache):
+                    with open(cmake_cache) as cc:
+                        for ln in cc.readlines():
+                            if ln.startswith(cmake_output_dir):
+                                path_to_bin = ln[len(cmake_output_dir):].strip()
+                                break
 
                 if path_to_bin is None:
                     if not test.customRunCmd:
@@ -1336,9 +1341,31 @@ class Suite:
                     self.log.warn("build successful but executable not found")
                     rc = 1
             else:
-                # Copy and rename executable to test dir
-                shutil.move(f"{path_to_exe}",
-                            f"{self.source_dir}/{test.buildDir}/{test.name}.ex")
+                # Determine destination path
+                if test.buildDir == ".":
+                    # If buildDir is ".", place executable directly in source_dir
+                    dest_path = os.path.join(self.source_dir, f"{test.name}.ex")
+                else:
+                    # Otherwise, create the buildDir subdirectory
+                    dest_dir = os.path.join(self.source_dir, test.buildDir)
+                    if not os.path.exists(dest_dir):
+                        os.makedirs(dest_dir)
+                    dest_path = os.path.join(dest_dir, f"{test.name}.ex")
+                
+                self.log.log(f"copying executable from {path_to_exe} to {dest_path}")
+                try:
+                    shutil.copy2(path_to_exe, dest_path)
+                    # Make sure it's executable
+                    os.chmod(dest_path, os.stat(dest_path).st_mode | 0o111)
+                    # Verify the copy worked
+                    if not os.path.exists(dest_path):
+                        self.log.fail(f"Copy succeeded but destination doesn't exist: {dest_path}")
+                        rc = 1
+                    else:
+                        self.log.log(f"Successfully copied executable to {dest_path}")
+                except Exception as e:
+                    self.log.fail(f"Failed to copy executable: {e}")
+                    rc = 1
 
         return comp_string, rc
 
