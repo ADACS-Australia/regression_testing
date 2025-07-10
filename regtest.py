@@ -302,6 +302,14 @@ def test_suite(argv):
 
     # read in the test information
     suite, test_list = params.load_params(args)
+    
+    # Initialize batch job hook if mk2025a path is configured
+    if hasattr(suite, 'mk2025aPath') and suite.mk2025aPath:
+        import suite as suite_module
+        if suite_module.batch_hook is None:
+            from batch_job_hook import BatchJobHook
+            suite_module.batch_hook = BatchJobHook(suite.mk2025aPath)
+            suite.log.log(f"Initialized batch job support with mk2025a at: {suite.mk2025aPath}")
 
     active_test_list = [t.name for t in test_list]
 
