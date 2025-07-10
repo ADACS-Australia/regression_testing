@@ -1,0 +1,10 @@
+# Python requirements for POC
+# Install with: pip install -r requirements_poc.txt
+
+# For mk2025a
+pyyaml
+jinja2
+
+# For regression testing (may already be installed)
+matplotlib
+numpy
