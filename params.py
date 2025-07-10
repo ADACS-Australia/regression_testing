@@ -61,6 +61,9 @@ def load_params(args):
     mysuite = suite.Suite(args)
     log.suite = mysuite
     mysuite.log = log
+    
+    # Initialize mk2025a path (for batch job support)
+    mysuite.mk2025aPath = None
 
     valid_options = list(mysuite.__dict__.keys())
 

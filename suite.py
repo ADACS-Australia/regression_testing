@@ -8,6 +8,13 @@ import sys
 import test_util
 import tempfile as tf
 
+# Batch job support
+try:
+    from batch_job_hook import BatchJobHook
+    batch_hook = None  # Will be initialized later with mk2025a path
+except ImportError:
+    batch_hook = None
+
 try: from json.decoder import JSONDecodeError
 except ImportError: JSONDecodeError = ValueError
 
@@ -133,6 +140,10 @@ class Test:
         self.compile_successful = False  # filled automatically
         self.compare_successful = False  # filled automatically
         self.analysis_successful = False # filled automatically
+        
+        # Batch job support (minimal demo)
+        self.useBatch = 0
+        self.batchConfig = None
 
         self.customRunCmd = None
 
@@ -968,6 +979,13 @@ class Suite:
         return comp_string, rc
 
     def run_test(self, test, base_command):
+        # Check if this should run as a batch job
+        global batch_hook
+        if batch_hook and batch_hook.should_run_as_batch(test):
+            success = batch_hook.run_batch_job(test, self)
+            return success
+            
+        # Original test execution logic
         test_env = None
         if test.useOMP:
             test_env = dict(os.environ, OMP_NUM_THREADS=f"{test.numthreads}")
