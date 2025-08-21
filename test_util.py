@@ -410,8 +410,13 @@ def get_args(arg_string=None):
                               help="largest relative error permitted during particle comparison")
     comp_options.add_argument("--particle_abs_tolerance", type=float, default=None, metavar="value",
                               help="largest absolute error permitted during particle comparison")
+    # Add subcommand support for batch jobs
+    parser.add_argument("command", type=str, nargs='?', default=None,
+                        help="batch job command: submit, check, extract, or www (for batch jobs only)")
     parser.add_argument("input_file", metavar="input-file", type=str, nargs=1,
                         help="the input file (INI format) containing the suite and test parameters")
+    parser.add_argument("work_dir", type=str, nargs='?', default=None,
+                        help="working directory for batch job operations")
 
     if not arg_string is None:
         args = parser.parse_args(arg_string)
