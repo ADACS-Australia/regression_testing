@@ -416,7 +416,7 @@ def get_args(arg_string=None):
     parser.add_argument("input_file", metavar="input-file", type=str, nargs=1,
                         help="the input file (INI format) containing the suite and test parameters")
     parser.add_argument("work_dir", type=str, nargs='?', default=None,
-                        help="working directory for batch job operations")
+                        help="working directory for batch job operations (default: ./)")
 
     if not arg_string is None:
         args = parser.parse_args(arg_string)

@@ -706,12 +706,8 @@ def test_suite(argv):
     
     # Check if this is a batch job command
     if args.command in ['submit', 'check', 'extract', 'www']:
-        if not args.work_dir:
-            print(f"Error: work_dir is required for batch job command '{args.command}'")
-            sys.exit(1)
-        
         ini_file = args.input_file[0]
-        work_dir = args.work_dir
+        work_dir = args.work_dir if args.work_dir else './'
         
         if args.command == 'submit':
             handle_batch_submit(args, ini_file, work_dir)
