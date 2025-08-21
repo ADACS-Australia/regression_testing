@@ -21,6 +21,8 @@ import tarfile
 import time
 import re
 import json
+import configparser
+import yaml
 
 import params
 import test_util
@@ -122,6 +124,207 @@ def cmake_setup(suite):
 
 
 
+
+def ini_to_yaml(ini_file):
+    """Convert INI file to YAML format for batch job submission"""
+    config = configparser.ConfigParser()
+    config.read(ini_file)
+    
+    # Extract main section data
+    main = dict(config['main'])
+    
+    # Build YAML structure
+    yaml_data = {}
+    
+    # HPC section
+    yaml_data['hpc'] = {
+        'cluster': main.get('cluster', ''),
+        'scheduler': main.get('scheduler', ''),
+        'gpu_build': main.get('gpu_build', ''),
+        'shell': main.get('shell', '')
+    }
+    
+    # Paths section
+    yaml_data['paths'] = {
+        'working_dir': main.get('working_dir', ''),
+        'environment': main.get('environment', ''),
+        'test_inputs': main.get('test_inputs', '')
+    }
+    
+    # Global job settings
+    yaml_data['global_job_settings'] = {
+        'ntasks_per_node': int(main.get('ntasks_per_node', 1)),
+        'mem_per_node': main.get('mem_per_node', '')
+    }
+    
+    # Scaling section
+    yaml_data['scaling'] = {
+        'strategy': main.get('scaling_strategy', ''),
+        'min_cores': None if main.get('min_cores', '1') == '1' else int(main.get('min_cores', 1)),
+        'max_cores': int(main.get('max_cores', 1))
+    }
+    
+    # Tests section
+    tests = []
+    for section in config.sections():
+        if section != 'main':
+            test_data = dict(config[section])
+            
+            # Parse cmake_cache string into list
+            cmake_cache = test_data.get('cmake_cache', '').split() if test_data.get('cmake_cache') else []
+            
+            test = {
+                'name': test_data.get('name', section),
+                'target': test_data.get('target', ''),
+                'input_file': test_data.get('inputfile', ''),
+                'cmake_cache': cmake_cache,
+                'job_settings': {
+                    'walltime': test_data.get('walltime', ''),
+                    'mem_per_node': test_data.get('mem_per_node', '')
+                }
+            }
+            tests.append(test)
+    
+    yaml_data['tests'] = tests
+    
+    return yaml_data
+
+def handle_batch_submit(args, ini_file, work_dir):
+    """Handle the submit command for batch jobs"""
+    # Read INI file to check for useBatch
+    config = configparser.ConfigParser()
+    config.read(ini_file)
+    
+    if not config.has_option('main', 'useBatch'):
+        raise Exception(f"INI file {ini_file} does not have useBatch option in [main] section")
+    
+    use_batch = config.getboolean('main', 'useBatch')
+    if not use_batch:
+        raise Exception(f"useBatch is not True in {ini_file}. This command is only for batch jobs.")
+    
+    # Create work directory if it doesn't exist
+    os.makedirs(work_dir, exist_ok=True)
+    
+    # Convert INI to YAML
+    yaml_data = ini_to_yaml(ini_file)
+    
+    # Save YAML file to work directory
+    yaml_file = os.path.join(work_dir, 'config.yaml')
+    with open(yaml_file, 'w') as f:
+        yaml.dump(yaml_data, f, default_flow_style=False, sort_keys=False)
+    
+    print(f"Created YAML configuration at {yaml_file}")
+    
+    # Import and run submit_jobs from hpc_performance_testing
+    try:
+        from hpc_performance_testing import submit_jobs
+        submit_jobs(yaml_file)
+        print(f"Batch jobs submitted successfully from {yaml_file}")
+    except ImportError as e:
+        print(f"Error: Could not import hpc_performance_testing module: {e}")
+        print("Make sure the mk2025a package is installed in your Python environment")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error submitting batch jobs: {e}")
+        sys.exit(1)
+
+def handle_batch_check(args, ini_file, work_dir):
+    """Handle the check command for batch jobs"""
+    # Read INI file to check for useBatch
+    config = configparser.ConfigParser()
+    config.read(ini_file)
+    
+    if not config.has_option('main', 'useBatch'):
+        raise Exception(f"INI file {ini_file} does not have useBatch option in [main] section")
+    
+    use_batch = config.getboolean('main', 'useBatch')
+    if not use_batch:
+        raise Exception(f"useBatch is not True in {ini_file}. This command is only for batch jobs.")
+    
+    # Check if work directory exists
+    if not os.path.exists(work_dir):
+        print(f"Error: Work directory {work_dir} does not exist. Run submit command first.")
+        sys.exit(1)
+    
+    # Look for test_instance.yaml file in the work directory
+    test_instance_file = os.path.join(work_dir, 'test_instance.yaml')
+    if not os.path.exists(test_instance_file):
+        print(f"Error: test_instance.yaml not found in {work_dir}. Run submit command first.")
+        sys.exit(1)
+    
+    # Import and run check_jobs from hpc_performance_testing
+    try:
+        from hpc_performance_testing import check_jobs
+        status = check_jobs(test_instance_file)
+        print(f"Job status: {status}")
+        return 0
+    except ImportError as e:
+        print(f"Error: Could not import hpc_performance_testing module: {e}")
+        print("Make sure the mk2025a package is installed in your Python environment")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error checking batch jobs: {e}")
+        sys.exit(1)
+
+def handle_batch_extract(args, ini_file, work_dir):
+    """Handle the extract command for batch jobs"""
+    # Read INI file to check for useBatch
+    config = configparser.ConfigParser()
+    config.read(ini_file)
+    
+    if not config.has_option('main', 'useBatch'):
+        raise Exception(f"INI file {ini_file} does not have useBatch option in [main] section")
+    
+    use_batch = config.getboolean('main', 'useBatch')
+    if not use_batch:
+        raise Exception(f"useBatch is not True in {ini_file}. This command is only for batch jobs.")
+    
+    # Check if work directory exists
+    if not os.path.exists(work_dir):
+        print(f"Error: Work directory {work_dir} does not exist. Run submit command first.")
+        sys.exit(1)
+    
+    # Look for test_instance.yaml file in the work directory
+    test_instance_file = os.path.join(work_dir, 'test_instance.yaml')
+    if not os.path.exists(test_instance_file):
+        print(f"Error: test_instance.yaml not found in {work_dir}. Run submit command first.")
+        sys.exit(1)
+    
+    # Import and run extract_results from hpc_performance_testing
+    try:
+        from hpc_performance_testing import extract_results
+        extract_results(test_instance_file)
+        print(f"Results extracted successfully from {test_instance_file}")
+        
+        # Check if results were created
+        with open(test_instance_file, 'r') as f:
+            test_instance = yaml.safe_load(f)
+        
+        if 'runtime' in test_instance and 'test_instance' in test_instance['runtime']:
+            results_dir = os.path.join(test_instance['runtime']['test_instance'], 'results')
+            if os.path.exists(results_dir):
+                print(f"Results available in: {results_dir}")
+                # List the parquet files
+                parquet_files = [f for f in os.listdir(results_dir) if f.endswith('.parquet')]
+                if parquet_files:
+                    print("Generated parquet files:")
+                    for pf in parquet_files:
+                        print(f"  - {pf}")
+        
+        return 0
+    except ImportError as e:
+        print(f"Error: Could not import hpc_performance_testing module: {e}")
+        print("Make sure the mk2025a package is installed in your Python environment")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error extracting batch job results: {e}")
+        sys.exit(1)
+
+def handle_batch_www(args, ini_file, work_dir):
+    """Handle the www command for batch jobs"""
+    # TODO: Implement www functionality
+    print(f"WWW command not yet implemented for {work_dir}")
+    sys.exit(1)
 
 def copy_benchmarks(old_full_test_dir, full_web_dir, test_list, bench_dir, log):
     """ copy the last plotfile output from each test in test_list
@@ -299,6 +502,28 @@ def test_suite(argv):
 
     # parse the commandline arguments
     args = test_util.get_args(arg_string=argv)
+    
+    # Check if this is a batch job command
+    if args.command in ['submit', 'check', 'extract', 'www']:
+        if not args.work_dir:
+            print(f"Error: work_dir is required for batch job command '{args.command}'")
+            sys.exit(1)
+        
+        ini_file = args.input_file[0]
+        work_dir = args.work_dir
+        
+        if args.command == 'submit':
+            handle_batch_submit(args, ini_file, work_dir)
+            return 0
+        elif args.command == 'check':
+            handle_batch_check(args, ini_file, work_dir)
+            return 0
+        elif args.command == 'extract':
+            handle_batch_extract(args, ini_file, work_dir)
+            return 0
+        elif args.command == 'www':
+            handle_batch_www(args, ini_file, work_dir)
+            return 0
 
     # read in the test information
     suite, test_list = params.load_params(args)
