@@ -321,10 +321,211 @@ def handle_batch_extract(args, ini_file, work_dir):
         sys.exit(1)
 
 def handle_batch_www(args, ini_file, work_dir):
-    """Handle the www command for batch jobs"""
-    # TODO: Implement www functionality
-    print(f"WWW command not yet implemented for {work_dir}")
-    sys.exit(1)
+    """Handle the www command for batch jobs - generate web report from parquet files"""
+    import pandas as pd
+    from pathlib import Path
+    from datetime import datetime
+    
+    # Read INI file to check for useBatch
+    config = configparser.ConfigParser()
+    config.read(ini_file)
+    
+    if not config.has_option('main', 'useBatch'):
+        raise Exception(f"INI file {ini_file} does not have useBatch option in [main] section")
+    
+    use_batch = config.getboolean('main', 'useBatch')
+    if not use_batch:
+        raise Exception(f"useBatch is not True in {ini_file}. This command is only for batch jobs.")
+    
+    # Check if work directory exists
+    if not os.path.exists(work_dir):
+        print(f"Error: Work directory {work_dir} does not exist. Run submit command first.")
+        sys.exit(1)
+    
+    # Look for test_instance.yaml file in the work directory
+    test_instance_file = os.path.join(work_dir, 'test_instance.yaml')
+    if not os.path.exists(test_instance_file):
+        print(f"Error: test_instance.yaml not found in {work_dir}. Run submit command first.")
+        sys.exit(1)
+    
+    # Read test instance to get the results directory
+    with open(test_instance_file, 'r') as f:
+        test_instance = yaml.safe_load(f)
+    
+    if 'runtime' not in test_instance or 'test_instance' not in test_instance['runtime']:
+        print(f"Error: test_instance.yaml does not contain runtime information")
+        sys.exit(1)
+    
+    results_dir = os.path.join(test_instance['runtime']['test_instance'], 'results')
+    if not os.path.exists(results_dir):
+        print(f"Error: Results directory {results_dir} does not exist. Run extract command first.")
+        sys.exit(1)
+    
+    # Check for parquet files
+    job_output_file = os.path.join(results_dir, 'job_output.parquet')
+    job_exit_file = os.path.join(results_dir, 'job_exit_status.parquet')
+    job_submission_file = os.path.join(results_dir, 'job_submission.parquet')
+    
+    if not os.path.exists(job_output_file) or not os.path.exists(job_exit_file):
+        print(f"Error: Required parquet files not found in {results_dir}. Run extract command first.")
+        sys.exit(1)
+    
+    # Create www directory in work_dir
+    www_dir = os.path.join(work_dir, 'www')
+    os.makedirs(www_dir, exist_ok=True)
+    
+    try:
+        # Read parquet files
+        job_output = pd.read_parquet(job_output_file)
+        exit_status = pd.read_parquet(job_exit_file)
+        
+        # Generate HTML report for each job
+        html_files = []
+        test_results = []
+        
+        for idx, row in job_output.iterrows():
+            exit_row = exit_status[exit_status['job_id'] == row['job_id']].iloc[0] if len(exit_status[exit_status['job_id'] == row['job_id']]) > 0 else None
+            
+            # Extract metrics from actual column names and convert to numeric
+            zone_updates_per_sec = float(row['zone_update_megaupdates_per_second']) * 1e6 if pd.notna(row.get('zone_update_megaupdates_per_second')) else 0
+            microsec_per_update = float(row['zone_update_microseconds_per_update']) if pd.notna(row.get('zone_update_microseconds_per_update')) else 0
+            wall_time = float(row['elapse_time']) if pd.notna(row.get('elapse_time')) else 0
+            n_mpi = int(row['n_mpi_processes']) if pd.notna(row.get('n_mpi_processes')) else 1
+            
+            # Calculate total zone updates (updates/sec * time)
+            zone_updates_total = int(zone_updates_per_sec * wall_time) if zone_updates_per_sec > 0 and wall_time > 0 else 0
+            
+            # Create test name from job_id
+            test_name = f"test_hydro3d_blast_n{n_mpi}"
+            
+            # Parse exit code (format might be "0:0" or just "0")
+            passed = False
+            if exit_row is not None:
+                exit_code_str = str(exit_row['exit_code'])
+                # Handle "0:0" format or plain "0"
+                exit_code = exit_code_str.split(':')[0] if ':' in exit_code_str else exit_code_str
+                passed = (exit_code == '0' or exit_code == 0)
+            
+            test_results.append({
+                'name': test_name,
+                'mpi_processes': n_mpi,
+                'wall_time': wall_time,
+                'zone_updates': zone_updates_total,
+                'zone_updates_per_sec': zone_updates_per_sec,
+                'microsec_per_update': microsec_per_update,
+                'status': 'PASSED' if passed else 'FAILED'
+            })
+        
+        # Calculate scaling efficiency (using first test as baseline)
+        if len(test_results) > 0:
+            baseline = test_results[0]
+            baseline_rate_per_proc = baseline['zone_updates_per_sec'] / baseline['mpi_processes']
+            
+            for test in test_results:
+                expected_rate = baseline_rate_per_proc * test['mpi_processes']
+                actual_rate = test['zone_updates_per_sec']
+                test['scaling_efficiency'] = (actual_rate / expected_rate * 100) if expected_rate > 0 else 0
+        
+        # Generate main index.html
+        html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Quokka Performance Test Report</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }}
+        .container {{ max-width: 1200px; margin: 0 auto; background-color: white; padding: 20px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }}
+        h1 {{ color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }}
+        h2 {{ color: #666; margin-top: 30px; }}
+        table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
+        th, td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
+        th {{ background-color: #4CAF50; color: white; }}
+        tr:nth-child(even) {{ background-color: #f2f2f2; }}
+        .passed {{ color: #4CAF50; font-weight: bold; }}
+        .failed {{ color: #f44336; font-weight: bold; }}
+        .timestamp {{ color: #999; font-size: 12px; }}
+        .metric-box {{ display: inline-block; margin: 10px; padding: 15px; background-color: #f0f0f0; border-radius: 5px; }}
+        .metric-value {{ font-size: 20px; font-weight: bold; color: #2196F3; }}
+        .metric-label {{ font-size: 12px; color: #666; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Quokka Performance Test Report</h1>
+        <p class="timestamp">Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+        
+        <h2>Test Summary</h2>
+        <div>
+            <div class="metric-box">
+                <div class="metric-value">{len(test_results)}</div>
+                <div class="metric-label">Total Tests</div>
+            </div>
+            <div class="metric-box">
+                <div class="metric-value">{sum(1 for t in test_results if t['status'] == 'PASSED')}</div>
+                <div class="metric-label">Passed</div>
+            </div>
+            <div class="metric-box">
+                <div class="metric-value">{sum(1 for t in test_results if t['status'] == 'FAILED')}</div>
+                <div class="metric-label">Failed</div>
+            </div>
+        </div>
+        
+        <h2>Test Results</h2>
+        <table>
+            <tr>
+                <th>Test Name</th>
+                <th>MPI Processes</th>
+                <th>Wall Time (s)</th>
+                <th>Zone Updates</th>
+                <th>MZone-Updates/s</th>
+                <th>μs per Update</th>
+                <th>Scaling Efficiency</th>
+                <th>Status</th>
+            </tr>"""
+        
+        for test in test_results:
+            status_class = 'passed' if test['status'] == 'PASSED' else 'failed'
+            efficiency = f"{test.get('scaling_efficiency', 0):.1f}%" if 'scaling_efficiency' in test else 'N/A'
+            html_content += f"""
+            <tr>
+                <td>{test['name']}</td>
+                <td>{test['mpi_processes']}</td>
+                <td>{test['wall_time']:.2f}</td>
+                <td>{test['zone_updates']:,}</td>
+                <td>{test['zone_updates_per_sec']/1e6:.2f}</td>
+                <td>{test['microsec_per_update']:.3f}</td>
+                <td>{efficiency}</td>
+                <td class="{status_class}">{test['status']}</td>
+            </tr>"""
+        
+        html_content += f"""
+        </table>
+        
+        <h2>Performance Analysis</h2>
+        <p>Performance metrics showing scaling behavior across different MPI process counts.</p>
+        
+        <hr style="margin-top: 50px;">
+        <p style="text-align: center; color: #999; font-size: 12px;">
+            Generated by Quokka Regression Testing Suite | 
+            <a href="{results_dir}">View raw data</a>
+        </p>
+    </div>
+</body>
+</html>"""
+        
+        # Save the report
+        index_file = os.path.join(www_dir, 'index.html')
+        with open(index_file, 'w') as f:
+            f.write(html_content)
+        
+        print(f"Web report generated successfully")
+        print(f"Report available at: {index_file}")
+        print(f"View with: firefox {index_file}")
+        
+        return 0
+        
+    except Exception as e:
+        print(f"Error generating web report: {e}")
+        sys.exit(1)
 
 def copy_benchmarks(old_full_test_dir, full_web_dir, test_list, bench_dir, log):
     """ copy the last plotfile output from each test in test_list
