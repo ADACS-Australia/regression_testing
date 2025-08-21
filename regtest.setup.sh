@@ -76,7 +76,7 @@ fi
 
 # Get setupFromFolder and virtualEnvironment from INI file
 SETUP_FOLDER=$(get_ini_value "$CONFIG_FILE" "setupFromFolder")
-VIRTUAL_ENV=$(get_ini_value "$CONFIG_FILE" "virtualEnvironment")
+NEW_VIRTUAL_ENV=$(get_ini_value "$CONFIG_FILE" "virtualEnvironment")
 
 # Step b: Source environment module script if setupFromFolder is provided
 if [ -n "$SETUP_FOLDER" ]; then
@@ -112,18 +112,18 @@ else
 fi
 
 # Step c: Activate virtual environment if specified
-if [ -n "$VIRTUAL_ENV" ]; then
-    print_msg "Virtual environment specified: $VIRTUAL_ENV"
+if [ -n "$NEW_VIRTUAL_ENV" ]; then
+    print_msg "Virtual environment specified: $NEW_VIRTUAL_ENV"
     
     # Check if virtual environment exists
-    if [ ! -d "$VIRTUAL_ENV" ]; then
-        print_error "Virtual environment does not exist: $VIRTUAL_ENV"
+    if [ ! -d "$NEW_VIRTUAL_ENV" ]; then
+        print_error "Virtual environment does not exist: $NEW_VIRTUAL_ENV"
         return 1
     fi
     
     # Check for activation script
-    if [ ! -f "$VIRTUAL_ENV/bin/activate" ]; then
-        print_error "Virtual environment activation script not found: $VIRTUAL_ENV/bin/activate"
+    if [ ! -f "$NEW_VIRTUAL_ENV/bin/activate" ]; then
+        print_error "Virtual environment activation script not found: $NEW_VIRTUAL_ENV/bin/activate"
         return 1
     fi
     
@@ -134,8 +134,8 @@ if [ -n "$VIRTUAL_ENV" ]; then
     fi
     
     # Activate the specified virtual environment
-    print_msg "Activating virtual environment: $VIRTUAL_ENV"
-    source "$VIRTUAL_ENV/bin/activate"
+    print_msg "Activating virtual environment: $NEW_VIRTUAL_ENV"
+    source "$NEW_VIRTUAL_ENV/bin/activate"
     if [ $? -eq 0 ]; then
         print_success "Virtual environment activated"
     else
@@ -202,8 +202,8 @@ fi
 echo ""
 print_success "Setup completed successfully!"
 echo "  Work directory: $WORK_DIR"
-if [ -n "$VIRTUAL_ENV" ]; then
-    echo "  Virtual environment: $VIRTUAL_ENV (active)"
+if [ -n "$NEW_VIRTUAL_ENV" ]; then
+    echo "  Virtual environment: $NEW_VIRTUAL_ENV (active)"
 fi
 if [ -n "$SETUP_FOLDER" ]; then
     echo "  Environment modules: Loaded from $ENV_SCRIPT_NAME"
