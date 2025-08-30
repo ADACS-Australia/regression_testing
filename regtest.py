@@ -125,7 +125,7 @@ def cmake_setup(suite):
 
 
 
-def ini_to_yaml(ini_file):
+def ini_to_yaml(ini_file, work_dir):
     """Convert INI file to YAML format for batch job submission"""
     config = configparser.ConfigParser()
     config.read(ini_file)
@@ -145,10 +145,28 @@ def ini_to_yaml(ini_file):
     }
     
     # Paths section
+    working_dir = main.get('working_dir', '')
+    environment = main.get('environment', '')
+    test_inputs = main.get('test_inputs', '')
+    
+    # Since we'll be changing to the work directory before running submit_jobs,
+    # we need to adjust the paths in the YAML to be relative to that directory
+    if working_dir and working_dir != './':
+        # We're going to cd to work_dir, so set YAML working_dir to ./
+        yaml_working_dir = './'
+        # Environment and test_inputs should be relative to the new working directory
+        yaml_environment = environment
+        yaml_test_inputs = test_inputs
+    else:
+        # No working_dir change needed
+        yaml_working_dir = working_dir
+        yaml_environment = environment
+        yaml_test_inputs = test_inputs
+    
     yaml_data['paths'] = {
-        'working_dir': main.get('working_dir', ''),
-        'environment': main.get('environment', ''),
-        'test_inputs': main.get('test_inputs', '')
+        'working_dir': yaml_working_dir,
+        'environment': yaml_environment,
+        'test_inputs': yaml_test_inputs
     }
     
     # Global job settings
@@ -206,7 +224,7 @@ def handle_batch_submit(args, ini_file, work_dir):
     os.makedirs(work_dir, exist_ok=True)
     
     # Convert INI to YAML
-    yaml_data = ini_to_yaml(ini_file)
+    yaml_data = ini_to_yaml(ini_file, work_dir)
     
     # Save YAML file to work directory
     yaml_file = os.path.join(work_dir, 'config.yaml')
