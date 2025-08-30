@@ -236,8 +236,72 @@ def handle_batch_submit(args, ini_file, work_dir):
     # Import and run submit_jobs from hpc_performance_testing
     try:
         from hpc_performance_testing import submit_jobs
-        submit_jobs(yaml_file)
-        print(f"Batch jobs submitted successfully from {yaml_file}")
+        
+        # Check if we need to change to the working directory specified in the config
+        config = configparser.ConfigParser()
+        config.read(ini_file)
+        config_working_dir = config.get('main', 'working_dir', fallback='')
+        
+        # Setup logging to runtime_err.log in the work directory
+        import subprocess
+        import datetime
+        runtime_log = os.path.join(work_dir, 'runtime_err.log')
+        
+        # Log the start of submission
+        with open(runtime_log, 'a') as log:
+            log.write(f"\n{'='*60}\n")
+            log.write(f"Starting batch job submission at {datetime.datetime.now()}\n")
+            log.write(f"Config file: {ini_file}\n")
+            log.write(f"Work directory: {work_dir}\n")
+            log.write(f"Working directory from config: {config_working_dir}\n")
+            log.flush()
+        
+        if config_working_dir and config_working_dir != './':
+            # Change to the specified working directory
+            actual_work_dir = os.path.join(os.path.dirname(ini_file) if os.path.dirname(ini_file) else '.', config_working_dir)
+            actual_work_dir = os.path.abspath(actual_work_dir)
+            
+            with open(runtime_log, 'a') as log:
+                log.write(f"Changing to working directory: {actual_work_dir}\n")
+                log.flush()
+            
+            original_dir = os.getcwd()
+            os.chdir(actual_work_dir)
+            
+            try:
+                # Run submit_jobs with stderr redirected to log file
+                with open(runtime_log, 'a') as log:
+                    log.write(f"Calling submit_jobs with YAML: {yaml_file}\n")
+                    log.flush()
+                    # Redirect stderr to the log file during submit_jobs
+                    import sys
+                    old_stderr = sys.stderr
+                    sys.stderr = log
+                    try:
+                        submit_jobs(yaml_file)
+                    finally:
+                        sys.stderr = old_stderr
+                    log.write(f"submit_jobs completed at {datetime.datetime.now()}\n")
+                    log.flush()
+                print(f"Batch jobs submitted successfully from {yaml_file}")
+            finally:
+                os.chdir(original_dir)
+        else:
+            # No directory change needed
+            with open(runtime_log, 'a') as log:
+                log.write(f"Calling submit_jobs with YAML: {yaml_file}\n")
+                log.flush()
+                # Redirect stderr to the log file during submit_jobs
+                import sys
+                old_stderr = sys.stderr
+                sys.stderr = log
+                try:
+                    submit_jobs(yaml_file)
+                finally:
+                    sys.stderr = old_stderr
+                log.write(f"submit_jobs completed at {datetime.datetime.now()}\n")
+                log.flush()
+            print(f"Batch jobs submitted successfully from {yaml_file}")
     except ImportError as e:
         print(f"Error: Could not import hpc_performance_testing module: {e}")
         print("Make sure the mk2025a package is installed in your Python environment")
