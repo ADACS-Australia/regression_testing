@@ -188,6 +188,20 @@ if [ -n "$SETUP_FOLDER" ]; then
     fi
 fi
 
+# Create runtime error log file in work directory
+RUNTIME_LOG="$WORK_DIR/runtime_err.log"
+if [ ! -f "$RUNTIME_LOG" ]; then
+    print_msg "Creating runtime error log file"
+    touch "$RUNTIME_LOG"
+    if [ $? -eq 0 ]; then
+        print_success "Runtime error log created: runtime_err.log"
+    else
+        print_error "Failed to create runtime error log"
+    fi
+else
+    print_msg "Runtime error log already exists: runtime_err.log"
+fi
+
 # Final check: Verify hpc_performance_testing is available
 print_msg "Checking for hpc_performance_testing module..."
 python -c "import hpc_performance_testing" 2>/dev/null
