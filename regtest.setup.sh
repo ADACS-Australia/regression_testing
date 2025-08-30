@@ -169,12 +169,13 @@ if [ -n "$SETUP_FOLDER" ]; then
     SOURCE_TESTS="$SETUP_FOLDER/tests_input"
     DEST_TESTS="$WORK_DIR/tests_input"
     
-    if [ -d "$SOURCE_TESTS" ]; then
+    if [ -d "$SOURCE_TESTS" ] || [ -L "$SOURCE_TESTS" ]; then
         if [ ! -d "$DEST_TESTS" ]; then
             print_msg "Copying tests_input folder to work directory"
-            cp -r "$SOURCE_TESTS" "$DEST_TESTS"
+            # Use -L to follow symbolic links and copy the actual content
+            cp -Lr "$SOURCE_TESTS" "$DEST_TESTS"
             if [ $? -eq 0 ]; then
-                print_success "tests_input folder copied"
+                print_success "tests_input folder copied (followed symbolic links)"
             else
                 print_error "Failed to copy tests_input folder"
                 return 1
