@@ -413,10 +413,8 @@ def get_args(arg_string=None):
     # Add subcommand support for batch jobs
     parser.add_argument("command", type=str, nargs='?', default=None,
                         help="batch job command: submit, check, extract, or www (for batch jobs only)")
-    parser.add_argument("input_file", metavar="input-file", type=str, nargs=1,
-                        help="the input file (INI format) containing the suite and test parameters")
-    parser.add_argument("work_dir", type=str, nargs='?', default=None,
-                        help="working directory for batch job operations (default: ./)")
+    parser.add_argument("input_file", metavar="input-file", type=str, nargs='?', default=None,
+                        help="the input file (INI format) containing the suite and test parameters (not required for www command)")
 
     if not arg_string is None:
         args = parser.parse_args(arg_string)

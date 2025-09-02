@@ -18,29 +18,24 @@ print_success() {
 # Check if script is being sourced (required for environment changes to persist)
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     print_error "This script must be sourced, not executed directly"
-    echo "Usage: source regtest.setup.sh config.ini [path_to_folder/]"
+    echo "Usage: source regtest.setup.sh config.ini"
     exit 1
 fi
 
 # Parse command line arguments
 if [ $# -lt 1 ]; then
     print_error "Missing required arguments"
-    echo "Usage: source regtest.setup.sh config.ini [path_to_folder/]"
+    echo "Usage: source regtest.setup.sh config.ini"
     return 1
 fi
 
 CONFIG_FILE="$1"
-WORK_DIR="${2:-.}"  # Default to current directory if not provided
 
 # Check if config file exists
 if [ ! -f "$CONFIG_FILE" ]; then
     print_error "Configuration file not found: $CONFIG_FILE"
     return 1
 fi
-
-print_msg "Setting up regression testing environment"
-print_msg "Config file: $CONFIG_FILE"
-print_msg "Work directory: $WORK_DIR"
 
 # Function to extract value from INI file
 get_ini_value() {
@@ -59,6 +54,16 @@ get_ini_value() {
         }
     ' "$file"
 }
+
+# Get working_dir from INI file
+WORK_DIR=$(get_ini_value "$CONFIG_FILE" "working_dir")
+if [ -z "$WORK_DIR" ]; then
+    WORK_DIR="./"  # Default to current directory if not specified
+fi
+
+print_msg "Setting up regression testing environment"
+print_msg "Config file: $CONFIG_FILE"
+print_msg "Work directory: $WORK_DIR"
 
 # Step a: Create work directory if it doesn't exist
 if [ ! -d "$WORK_DIR" ]; then
@@ -188,8 +193,8 @@ if [ -n "$SETUP_FOLDER" ]; then
     fi
 fi
 
-# Create runtime error log file in work directory
-RUNTIME_LOG="$WORK_DIR/runtime_err.log"
+# Create runtime error log file in current directory (work/)
+RUNTIME_LOG="runtime_err.log"
 if [ ! -f "$RUNTIME_LOG" ]; then
     print_msg "Creating runtime error log file"
     touch "$RUNTIME_LOG"
@@ -225,7 +230,7 @@ if [ -n "$SETUP_FOLDER" ]; then
 fi
 echo ""
 echo "You can now run regression tests with:"
-echo "  python regtest.py submit $CONFIG_FILE $WORK_DIR"
-echo "  python regtest.py check $CONFIG_FILE $WORK_DIR"
-echo "  python regtest.py extract $CONFIG_FILE $WORK_DIR"
-echo "  python regtest.py www $CONFIG_FILE $WORK_DIR"
+echo "  python regtest.py submit $CONFIG_FILE"
+echo "  python regtest.py check $CONFIG_FILE"
+echo "  python regtest.py extract $CONFIG_FILE"
+echo "  python regtest.py www $CONFIG_FILE"

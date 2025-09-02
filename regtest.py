@@ -237,15 +237,10 @@ def handle_batch_submit(args, ini_file, work_dir):
     try:
         from hpc_performance_testing import submit_jobs
         
-        # Check if we need to change to the working directory specified in the config
-        config = configparser.ConfigParser()
-        config.read(ini_file)
-        config_working_dir = config.get('main', 'working_dir', fallback='')
-        
-        # Setup logging to runtime_err.log in the work directory
+        # Setup logging to runtime_err.log in the current directory
         import subprocess
         import datetime
-        runtime_log = os.path.join(work_dir, 'runtime_err.log')
+        runtime_log = 'runtime_err.log'
         
         # Log the start of submission
         with open(runtime_log, 'a') as log:
@@ -253,13 +248,11 @@ def handle_batch_submit(args, ini_file, work_dir):
             log.write(f"Starting batch job submission at {datetime.datetime.now()}\n")
             log.write(f"Config file: {ini_file}\n")
             log.write(f"Work directory: {work_dir}\n")
-            log.write(f"Working directory from config: {config_working_dir}\n")
             log.flush()
         
-        if config_working_dir and config_working_dir != './':
-            # Change to the specified working directory
-            actual_work_dir = os.path.join(os.path.dirname(ini_file) if os.path.dirname(ini_file) else '.', config_working_dir)
-            actual_work_dir = os.path.abspath(actual_work_dir)
+        # Change to work directory if specified
+        if work_dir and work_dir != './':
+            actual_work_dir = os.path.abspath(work_dir)
             
             with open(runtime_log, 'a') as log:
                 log.write(f"Changing to working directory: {actual_work_dir}\n")
@@ -270,15 +263,19 @@ def handle_batch_submit(args, ini_file, work_dir):
             
             try:
                 # Run submit_jobs with stderr redirected to log file
-                with open(runtime_log, 'a') as log:
-                    log.write(f"Calling submit_jobs with YAML: {yaml_file}\n")
+                # Since we changed to the work directory, use relative path
+                relative_yaml_file = 'config.yaml'
+                # Need to use absolute path for runtime_log since we changed directories
+                abs_runtime_log = os.path.join(original_dir, runtime_log)
+                with open(abs_runtime_log, 'a') as log:
+                    log.write(f"Calling submit_jobs with YAML: {relative_yaml_file}\n")
                     log.flush()
                     # Redirect stderr to the log file during submit_jobs
                     import sys
                     old_stderr = sys.stderr
                     sys.stderr = log
                     try:
-                        submit_jobs(yaml_file)
+                        submit_jobs(relative_yaml_file)
                     finally:
                         sys.stderr = old_stderr
                     log.write(f"submit_jobs completed at {datetime.datetime.now()}\n")
@@ -402,59 +399,114 @@ def handle_batch_extract(args, ini_file, work_dir):
         print(f"Error extracting batch job results: {e}")
         sys.exit(1)
 
-def handle_batch_www(args, ini_file, work_dir):
-    """Handle the www command for batch jobs - generate web report from parquet files"""
-    import pandas as pd
+def handle_batch_www(args):
+    """Handle the www command for batch jobs - generate web report from parquet files
+    
+    This command scans all INI files in the current directory to discover folders
+    and generate a complete web report for all of them.
+    """
     from pathlib import Path
     from datetime import datetime
+    import glob
     
-    # Read INI file to check for useBatch
-    config = configparser.ConfigParser()
-    config.read(ini_file)
+    # Import our web generator
+    from web_generator import generate_all_pages
     
-    if not config.has_option('main', 'useBatch'):
-        raise Exception(f"INI file {ini_file} does not have useBatch option in [main] section")
+    # Get current working directory
+    work_dir = os.getcwd()
+    print(f"Scanning for INI files in: {work_dir}")
     
-    use_batch = config.getboolean('main', 'useBatch')
-    if not use_batch:
-        raise Exception(f"useBatch is not True in {ini_file}. This command is only for batch jobs.")
-    
-    # Check if work directory exists
-    if not os.path.exists(work_dir):
-        print(f"Error: Work directory {work_dir} does not exist. Run submit command first.")
+    # Find all INI files
+    ini_files = glob.glob(os.path.join(work_dir, '*.ini'))
+    if not ini_files:
+        print(f"Error: No INI files found in {work_dir}")
         sys.exit(1)
     
-    # Look for test_instance.yaml file in the work directory
-    test_instance_file = os.path.join(work_dir, 'test_instance.yaml')
-    if not os.path.exists(test_instance_file):
-        print(f"Error: test_instance.yaml not found in {work_dir}. Run submit command first.")
+    print(f"Found {len(ini_files)} INI file(s)")
+    
+    # Scan all INI files to collect folders and verify webOutputDir
+    folders = set()
+    web_output_dir = None
+    
+    for ini_file in ini_files:
+        config = configparser.ConfigParser()
+        config.read(ini_file)
+        
+        # Check for useBatch
+        if not config.has_option('main', 'useBatch'):
+            print(f"Warning: {os.path.basename(ini_file)} does not have useBatch option, skipping")
+            continue
+            
+        use_batch = config.getboolean('main', 'useBatch')
+        if not use_batch:
+            print(f"Warning: {os.path.basename(ini_file)} has useBatch=False, skipping")
+            continue
+        
+        # Get working_dir (folder name)
+        if config.has_option('main', 'working_dir'):
+            folder = config.get('main', 'working_dir').rstrip('/')
+            folders.add(folder)
+            print(f"  Found folder '{folder}' in {os.path.basename(ini_file)}")
+        
+        # Get webOutputDir and verify consistency
+        if config.has_option('main', 'webOutputDir'):
+            current_web_dir = config.get('main', 'webOutputDir')
+            if web_output_dir is None:
+                web_output_dir = current_web_dir
+            elif web_output_dir != current_web_dir:
+                print(f"Error: Inconsistent webOutputDir values:")
+                print(f"  Expected: {web_output_dir}")
+                print(f"  Found in {os.path.basename(ini_file)}: {current_web_dir}")
+                print("All INI files must use the same webOutputDir")
+                sys.exit(1)
+    
+    if not folders:
+        print("Error: No valid folders found in INI files")
         sys.exit(1)
     
-    # Read test instance to get the results directory
-    with open(test_instance_file, 'r') as f:
-        test_instance = yaml.safe_load(f)
-    
-    if 'runtime' not in test_instance or 'test_instance' not in test_instance['runtime']:
-        print(f"Error: test_instance.yaml does not contain runtime information")
+    if web_output_dir is None:
+        print("Error: No webOutputDir found in any INI file")
+        print("Please add webOutputDir = /path/to/web/output to your INI files")
         sys.exit(1)
     
-    results_dir = os.path.join(test_instance['runtime']['test_instance'], 'results')
-    if not os.path.exists(results_dir):
-        print(f"Error: Results directory {results_dir} does not exist. Run extract command first.")
+    print(f"\nFolders to process: {', '.join(sorted(folders))}")
+    print(f"Web output directory: {web_output_dir}")
+    
+    # Create web output directory if it doesn't exist
+    web_output_path = Path(web_output_dir)
+    try:
+        web_output_path.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"Error creating web output directory {web_output_dir}: {e}")
         sys.exit(1)
     
-    # Check for parquet files
-    job_output_file = os.path.join(results_dir, 'job_output.parquet')
-    job_exit_file = os.path.join(results_dir, 'job_exit_status.parquet')
-    job_submission_file = os.path.join(results_dir, 'job_submission.parquet')
-    
-    if not os.path.exists(job_output_file) or not os.path.exists(job_exit_file):
-        print(f"Error: Required parquet files not found in {results_dir}. Run extract command first.")
+    # Generate web pages for all discovered folders
+    try:
+        generate_all_pages(work_dir, web_output_dir, sorted(list(folders)))
+        print(f"\nWeb report generated successfully!")
+        print(f"View with: firefox {os.path.join(web_output_dir, 'index.html')}")
+        return 0
+    except Exception as e:
+        print(f"Error generating web report: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
-    
-    # Create www directory in work_dir
-    www_dir = os.path.join(work_dir, 'www')
-    os.makedirs(www_dir, exist_ok=True)
+
+def copy_benchmarks(old_full_test_dir, full_web_dir, test_list, bench_dir, log):
+    """ copy the last plotfile output from each test in test_list
+        into the benchmark directory.  Also copy the diffDir, if
+        it exists """
+    td = os.getcwd()
+
+    for t in test_list:
+        wd = f"{old_full_test_dir}/{t.name}"
+        os.chdir(wd)
+
+        if t.compareFile == "" and t.outputFile == "":
+            p = t.get_compare_file(output_dir=wd)
+        elif not t.outputFile == "":
+            if not os.path.exists(t.outputFile):
+                p = test_util.get_recent_filename(wd, t.outputFile, ".tgz")
     
     try:
         # Read parquet files
@@ -787,9 +839,25 @@ def test_suite(argv):
     args = test_util.get_args(arg_string=argv)
     
     # Check if this is a batch job command
-    if args.command in ['submit', 'check', 'extract', 'www']:
-        ini_file = args.input_file[0]
-        work_dir = args.work_dir if args.work_dir else './'
+    if args.command == 'www':
+        # www command doesn't need an INI file - it scans all INI files
+        handle_batch_www(args)
+        return 0
+    elif args.command in ['submit', 'check', 'extract']:
+        # These commands still need an INI file
+        if args.input_file is None:
+            print(f"Error: {args.command} command requires an INI file")
+            return 1
+            
+        if isinstance(args.input_file, list):
+            ini_file = args.input_file[0]
+        else:
+            ini_file = args.input_file
+        
+        # Read working_dir from INI file
+        config = configparser.ConfigParser()
+        config.read(ini_file)
+        work_dir = config.get('main', 'working_dir', fallback='./')
         
         if args.command == 'submit':
             handle_batch_submit(args, ini_file, work_dir)
@@ -799,9 +867,6 @@ def test_suite(argv):
             return 0
         elif args.command == 'extract':
             handle_batch_extract(args, ini_file, work_dir)
-            return 0
-        elif args.command == 'www':
-            handle_batch_www(args, ini_file, work_dir)
             return 0
 
     # read in the test information
