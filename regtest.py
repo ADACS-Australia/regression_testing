@@ -399,6 +399,187 @@ def handle_batch_extract(args, ini_file, work_dir):
         print(f"Error extracting batch job results: {e}")
         sys.exit(1)
 
+def handle_batch_setup(args, ini_file):
+    """Handle the setup command - prepare the environment for regression testing
+    
+    This replaces the bash script regtest.setup.sh with Python implementation.
+    """
+    import shutil
+    import glob
+    import subprocess
+    
+    def print_msg(msg):
+        print(f"==> {msg}")
+    
+    def print_error(msg):
+        print(f"ERROR: {msg}", file=sys.stderr)
+    
+    def print_success(msg):
+        print(f"✓ {msg}")
+    
+    # Check if config file exists
+    if not os.path.exists(ini_file):
+        print_error(f"Configuration file not found: {ini_file}")
+        return 1
+    
+    # Read configuration
+    config = configparser.ConfigParser()
+    config.read(ini_file)
+    
+    # Get working_dir from INI file
+    work_dir = config.get('main', 'working_dir', fallback='./')
+    print_msg(f"Setting up regression testing environment")
+    print_msg(f"Config file: {ini_file}")
+    print_msg(f"Work directory: {work_dir}")
+    
+    # Step a: Create work directory if it doesn't exist
+    if not os.path.exists(work_dir):
+        print_msg(f"Creating work directory: {work_dir}")
+        try:
+            os.makedirs(work_dir, exist_ok=True)
+            print_success("Work directory created")
+        except Exception as e:
+            print_error(f"Failed to create work directory: {e}")
+            return 1
+    else:
+        print_msg(f"Work directory already exists: {work_dir}")
+    
+    # Get setupFromFolder and virtualEnvironment from INI file
+    setup_folder = config.get('main', 'setupFromFolder', fallback=None)
+    virtual_env = config.get('main', 'virtualEnvironment', fallback=None)
+    
+    env_script_name = None
+    
+    # Step b: Source environment module script if setupFromFolder is provided
+    if setup_folder:
+        print_msg(f"Setup folder specified: {setup_folder}")
+        
+        # Check if setup folder exists
+        if not os.path.exists(setup_folder):
+            print_error(f"Setup folder does not exist: {setup_folder}")
+            return 1
+        
+        # Find env_*.sh script
+        env_scripts = glob.glob(os.path.join(setup_folder, "env_*.sh"))
+        if not env_scripts:
+            print_error(f"No env_*.sh script found in {setup_folder}")
+            return 1
+        
+        env_script = env_scripts[0]
+        env_script_name = os.path.basename(env_script)
+        print_msg(f"Found environment script: {env_script_name}")
+        
+        # Note: We cannot directly source bash scripts in Python
+        # Instead, we'll copy the script for later use and inform the user
+        print_msg("Note: Python cannot directly source bash scripts.")
+        print_msg(f"The environment script '{env_script_name}' will be copied to the work directory.")
+        print_msg("You will need to source it manually before running the tests:")
+        print_msg(f"  source {os.path.join(work_dir, env_script_name)}")
+        
+        # Step d: Copy environment script to work directory if needed
+        dest_env_script = os.path.join(work_dir, env_script_name)
+        if not os.path.exists(dest_env_script):
+            print_msg("Copying environment script to work directory")
+            try:
+                shutil.copy2(env_script, dest_env_script)
+                print_success(f"Environment script copied: {env_script_name}")
+            except Exception as e:
+                print_error(f"Failed to copy environment script: {e}")
+                return 1
+        else:
+            print_msg(f"Environment script already exists in work directory: {env_script_name}")
+        
+        # Step e: Copy tests_input folder if needed
+        source_tests = os.path.join(setup_folder, "tests_input")
+        dest_tests = os.path.join(work_dir, "tests_input")
+        
+        if os.path.exists(source_tests) or os.path.islink(source_tests):
+            if not os.path.exists(dest_tests):
+                print_msg("Copying tests_input folder to work directory")
+                try:
+                    # Use copytree with symlinks=False to follow links and copy actual content
+                    shutil.copytree(source_tests, dest_tests, symlinks=False)
+                    print_success("tests_input folder copied (followed symbolic links)")
+                except Exception as e:
+                    print_error(f"Failed to copy tests_input folder: {e}")
+                    return 1
+            else:
+                print_msg("tests_input folder already exists in work directory")
+        else:
+            print_msg("No tests_input folder found in setup folder, skipping")
+    else:
+        print_msg("No setupFromFolder specified, skipping environment module setup")
+    
+    # Step c: Handle virtual environment if specified
+    if virtual_env:
+        print_msg(f"Virtual environment specified: {virtual_env}")
+        
+        # Check if virtual environment exists
+        if not os.path.exists(virtual_env):
+            print_error(f"Virtual environment does not exist: {virtual_env}")
+            return 1
+        
+        activate_script = os.path.join(virtual_env, "bin", "activate")
+        if not os.path.exists(activate_script):
+            print_error(f"Virtual environment activation script not found: {activate_script}")
+            return 1
+        
+        print_msg("Note: Python script cannot activate virtual environments for the parent shell.")
+        print_msg("You will need to activate it manually before running the tests:")
+        print_msg(f"  source {activate_script}")
+    else:
+        print_msg("No virtual environment specified, using current Python environment")
+    
+    # Create runtime error log file in current directory
+    runtime_log = "runtime_err.log"
+    if not os.path.exists(runtime_log):
+        print_msg("Creating runtime error log file")
+        try:
+            open(runtime_log, 'a').close()
+            print_success(f"Runtime error log created: {runtime_log}")
+        except Exception as e:
+            print_error(f"Failed to create runtime error log: {e}")
+    else:
+        print_msg(f"Runtime error log already exists: {runtime_log}")
+    
+    # Final check: Verify hpc_performance_testing is available
+    print_msg("Checking for hpc_performance_testing module...")
+    try:
+        import hpc_performance_testing
+        print_success("hpc_performance_testing module is available")
+    except ImportError:
+        print_error("hpc_performance_testing module not found")
+        print("       Please ensure the mk2025a package is installed in your Python environment")
+        return 1
+    
+    # Summary
+    print()
+    print_success("Setup completed successfully!")
+    print(f"  Work directory: {work_dir}")
+    if virtual_env:
+        print(f"  Virtual environment: {virtual_env} (needs manual activation)")
+    if setup_folder and env_script_name:
+        print(f"  Environment script: {env_script_name} (needs manual sourcing)")
+    print()
+    print("Manual steps required before running tests:")
+    if setup_folder and env_script_name:
+        print(f"  1. source {os.path.join(work_dir, env_script_name)}")
+    if virtual_env:
+        activate_cmd = f"source {os.path.join(virtual_env, 'bin', 'activate')}"
+        if setup_folder:
+            print(f"  2. {activate_cmd}")
+        else:
+            print(f"  1. {activate_cmd}")
+    print()
+    print("You can then run regression tests with:")
+    print(f"  python regression_testing/regtest.py submit {ini_file}")
+    print(f"  python regression_testing/regtest.py check {ini_file}")
+    print(f"  python regression_testing/regtest.py extract {ini_file}")
+    print(f"  python regression_testing/regtest.py www {ini_file}")
+    
+    return 0
+
+
 def handle_batch_www(args):
     """Handle the www command for batch jobs - generate web report from parquet files
     
@@ -843,6 +1024,18 @@ def test_suite(argv):
         # www command doesn't need an INI file - it scans all INI files
         handle_batch_www(args)
         return 0
+    elif args.command == 'setup':
+        # setup command replaces the bash setup script
+        if args.input_file is None:
+            print(f"Error: setup command requires an INI file")
+            return 1
+            
+        if isinstance(args.input_file, list):
+            ini_file = args.input_file[0]
+        else:
+            ini_file = args.input_file
+            
+        return handle_batch_setup(args, ini_file)
     elif args.command in ['submit', 'check', 'extract']:
         # These commands still need an INI file
         if args.input_file is None:
@@ -1919,6 +2112,79 @@ def test_suite(argv):
     return num_failed
 
 
+def parse_ssh_command():
+    """
+    Parse and validate SSH_ORIGINAL_COMMAND for restricted SSH key execution.
+    
+    Returns:
+        List of validated command arguments or None if not in SSH context
+    """
+    ssh_cmd = os.environ.get('SSH_ORIGINAL_COMMAND')
+    if not ssh_cmd:
+        return None
+    
+    # Validate the command format: must be "regtest.py <command> <ini_file>"
+    # where <command> is one of: submit, check, extract, www, setup
+    valid_commands = ['submit', 'check', 'extract', 'www', 'setup']
+    
+    # Use regex to parse the command safely
+    # Pattern: optional path/regtest.py followed by command and INI file
+    pattern = r'^(?:.*/)?regtest\.py\s+(' + '|'.join(valid_commands) + r')\s+([a-zA-Z0-9_\-./]+\.ini)\s*$'
+    match = re.match(pattern, ssh_cmd)
+    
+    if not match:
+        print(f"ERROR: Invalid SSH command: {ssh_cmd}", file=sys.stderr)
+        print(f"Valid format: regtest.py <command> <ini_file>", file=sys.stderr)
+        print(f"Where <command> is one of: {', '.join(valid_commands)}", file=sys.stderr)
+        sys.exit(1)
+    
+    command = match.group(1)
+    ini_file = match.group(2)
+    
+    # Security check: ensure INI file path doesn't contain suspicious patterns
+    if '..' in ini_file or ini_file.startswith('/'):
+        print(f"ERROR: Invalid INI file path: {ini_file}", file=sys.stderr)
+        print("INI file must be a relative path without '..'", file=sys.stderr)
+        sys.exit(1)
+    
+    return [command, ini_file]
+
+
+def change_to_ini_directory(ini_file):
+    """
+    Change to the directory containing the INI file for proper relative path resolution.
+    
+    Args:
+        ini_file: Path to the INI file
+    """
+    ini_path = os.path.abspath(ini_file)
+    if not os.path.exists(ini_path):
+        print(f"ERROR: INI file not found: {ini_path}", file=sys.stderr)
+        sys.exit(1)
+    
+    ini_dir = os.path.dirname(ini_path)
+    if ini_dir:
+        os.chdir(ini_dir)
+        # Update the ini_file to just the filename since we're now in its directory
+        return os.path.basename(ini_path)
+    return ini_file
+
+
 if __name__ == "__main__":
-    n = test_suite(sys.argv[1:])
+    # Check if running via restricted SSH
+    ssh_args = parse_ssh_command()
+    
+    if ssh_args:
+        # Running via SSH - use parsed and validated arguments
+        args = ssh_args
+        print(f"Running via SSH with command: {' '.join(args)}")
+        
+        # Change to the directory containing the INI file
+        if len(args) > 1:
+            args[1] = change_to_ini_directory(args[1])
+    else:
+        # Normal execution - use command line arguments
+        args = sys.argv[1:]
+    
+    n = test_suite(args)
     sys.exit(n)
