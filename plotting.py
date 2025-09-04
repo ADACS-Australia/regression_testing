@@ -18,7 +18,8 @@ import numpy as np
 
 def create_performance_plot(data_entries: List[Dict], 
                           title: str = "Performance Scaling",
-                          reference_data: Optional[List[Dict]] = None) -> str:
+                          reference_data: Optional[List[Dict]] = None,
+                          quokka_version: Optional[str] = None) -> str:
     """
     Create a performance plot showing zone updates/sec/GPU vs cores.
     
@@ -26,6 +27,7 @@ def create_performance_plot(data_entries: List[Dict],
         data_entries: List of dictionaries with performance data
         title: Plot title
         reference_data: Optional reference data for comparison
+        quokka_version: Optional Quokka git commit hash to include in title
         
     Returns:
         HTML string containing the embedded base64 image
@@ -92,7 +94,14 @@ def create_performance_plot(data_entries: List[Dict],
     # Update layout
     ax.set_xlabel('Number of Cores', fontsize=12)
     ax.set_ylabel('Zone Updates/sec/GPU', fontsize=12)
-    ax.set_title(title, fontsize=14, fontweight='bold')
+    
+    # Include Quokka version in title if available
+    if quokka_version:
+        full_title = f"{title} (Quokka: {quokka_version})"
+    else:
+        full_title = title
+    ax.set_title(full_title, fontsize=14, fontweight='bold')
+    
     ax.grid(True, which="both", ls="-", alpha=0.2)
     ax.legend(loc='lower left', fontsize=10)
     
@@ -107,13 +116,15 @@ def create_performance_plot(data_entries: List[Dict],
 
 
 def create_comparison_plot(timestamps_data: Dict[str, List[Dict]], 
-                         folder_name: str) -> str:
+                         folder_name: str,
+                         quokka_versions: Optional[Dict[str, str]] = None) -> str:
     """
     Create a comparison plot between multiple timestamps in the same folder.
     
     Args:
         timestamps_data: Dictionary mapping timestamp to list of performance entries
         folder_name: Name of the folder being compared
+        quokka_versions: Optional dict mapping timestamp to Quokka version
         
     Returns:
         HTML string containing the embedded base64 image
@@ -163,6 +174,12 @@ def create_comparison_plot(timestamps_data: Dict[str, List[Dict]],
         # Format timestamp for display
         ts_display = f"{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]} {timestamp[8:10]}:{timestamp[10:12]}"
         
+        # Add Quokka version if available
+        if quokka_versions and timestamp in quokka_versions:
+            version_str = f" [v{quokka_versions[timestamp]}]"
+        else:
+            version_str = ""
+        
         # Plot each test
         for test_idx, (test_name, test_entries) in enumerate(test_groups.items()):
             test_entries.sort(key=lambda x: x['cores'])
@@ -172,7 +189,7 @@ def create_comparison_plot(timestamps_data: Dict[str, List[Dict]],
             handle = ax.loglog(cores, performance,
                      marker='o', markersize=6, linestyle='none',
                      color=colors[t_idx % len(colors)],
-                     label=f"{test_name} ({ts_display})")
+                     label=f"{test_name} ({ts_display}){version_str}")
             plot_handles.extend(handle)
     
     # Update layout

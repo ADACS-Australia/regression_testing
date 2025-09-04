@@ -19,7 +19,8 @@ from web_utils import (
     aggregate_folder_data,
     get_reference_data,
     extract_performance_data,
-    format_missing_data_message
+    format_missing_data_message,
+    get_quokka_version
 )
 
 # Import plotting utilities
@@ -538,7 +539,14 @@ def create_folder_page(work_dir: str, web_output_dir: str, folder_name: str) -> 
     if len(timestamps_with_data) >= 1:
         if len(timestamps_with_data) > 1:
             # Multiple timestamps - show comparison
-            comparison_plot = create_comparison_plot(timestamps_with_data, folder_name)
+            # Get versions for all timestamps
+            quokka_versions = {}
+            for ts in timestamps_with_data.keys():
+                version = get_quokka_version(work_dir, folder_name, ts)
+                if version:
+                    quokka_versions[ts] = version
+            
+            comparison_plot = create_comparison_plot(timestamps_with_data, folder_name, quokka_versions)
             content += f"""
             <h2>Performance Comparison</h2>
             <div class="plot-container">
@@ -549,8 +557,10 @@ def create_folder_page(work_dir: str, web_output_dir: str, folder_name: str) -> 
             # Single timestamp - show regular performance plot
             single_ts = list(timestamps_with_data.keys())[0]
             single_data = timestamps_with_data[single_ts]
+            single_version = get_quokka_version(work_dir, folder_name, single_ts)
             perf_plot = create_performance_plot(single_data, 
-                                               title=f"Performance - {folder_name}")
+                                               title=f"Performance - {folder_name}",
+                                               quokka_version=single_version)
             content += f"""
             <h2>Performance</h2>
             <div class="plot-container">
@@ -602,10 +612,12 @@ def create_timestamp_page(
     timestamp_dir = os.path.join(web_output_dir, folder_name, timestamp)
     os.makedirs(timestamp_dir, exist_ok=True)
     
-    # Build HTML content
+    # Get Quokka version for display
+    quokka_version_display = get_quokka_version(work_dir, folder_name, timestamp)
+    version_text = f" (Quokka: {quokka_version_display})" if quokka_version_display else ""
+    
+    # Build HTML content (no H1 needed - template provides it via heading parameter)
     content = f"""
-        <h1>{folder_name} - {timestamp}</h1>
-        
         <div class="nav-links">
             <a href="../../index.html">← Main Index</a> | 
             <a href="../index.html">← {folder_name} Index</a>
@@ -672,11 +684,15 @@ def create_timestamp_page(
             for test_entries in reference_data_dict.values():
                 reference_data.extend(test_entries)
         
+        # Get Quokka version for this timestamp
+        quokka_version = get_quokka_version(work_dir, folder_name, timestamp)
+        
         # Generate performance plot
         plot_html = create_performance_plot(
             folder_data, 
             title=f"Performance Scaling - {folder_name}/{timestamp}",
-            reference_data=reference_data
+            reference_data=reference_data,
+            quokka_version=quokka_version
         )
         
         content += f"""
@@ -784,6 +800,7 @@ def create_timestamp_page(
     # Generate final HTML
     html = get_html_template().format(
         title=f"Quokka Regression Testing - {folder_name}/{timestamp}",
+        heading=f"Quokka Regression Testing - {folder_name}/{timestamp}{version_text}",
         content=content,
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     )

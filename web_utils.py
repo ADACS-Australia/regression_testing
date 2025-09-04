@@ -5,11 +5,43 @@ Utility functions for web report generation from regression test data.
 
 import os
 import re
+import subprocess
 import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import warnings
+
+
+def get_quokka_version(work_dir: str, folder_name: str, timestamp: str) -> Optional[str]:
+    """
+    Extract the Quokka git commit hash for a given timestamp.
+    
+    Args:
+        work_dir: Base work directory
+        folder_name: Folder name (e.g., 'A', 'B', 'C', 'reference')
+        timestamp: Timestamp string
+        
+    Returns:
+        6-character git commit hash or None if not found
+    """
+    quokka_path = os.path.join(work_dir, folder_name, 'performance_test', timestamp, 'quokka')
+    
+    if not os.path.exists(quokka_path):
+        return None
+    
+    try:
+        # Get the short commit hash (6 characters)
+        result = subprocess.run(
+            ['git', 'rev-parse', '--short=6', 'HEAD'],
+            cwd=quokka_path,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return result.stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
 
 
 def extract_gpu_count_from_script(script_path: str) -> Optional[int]:
