@@ -51,11 +51,11 @@ def get_baseline_data(folder_path: str, current_timestamp: str) -> Optional[Dict
                 if test_name not in baseline_data:
                     baseline_data[test_name] = []
                 
-                if pd.notna(row.get('zone_updates_per_gpu')):
+                if pd.notna(row.get('zone_updates_per_sec_per_gpu')):
                     entry = {
-                        'cores': row.get('n_cores', 0),
+                        'cores': row.get('cores', 0),
                         'gpus_per_task': row.get('gpus_per_task', 0),
-                        'zone_updates_per_sec_per_gpu': row.get('zone_updates_per_gpu'),
+                        'zone_updates_per_sec_per_gpu': row.get('zone_updates_per_sec_per_gpu'),
                         'elapsed_time': row.get('elapsed_time'),
                         'timestamp': ts
                     }
@@ -107,11 +107,11 @@ def get_latest_reference_data(work_dir: str) -> Optional[Dict[str, List[Dict]]]:
                 if test_name not in reference_data:
                     reference_data[test_name] = []
                 
-                if pd.notna(row.get('zone_updates_per_gpu')):
+                if pd.notna(row.get('zone_updates_per_sec_per_gpu')):
                     entry = {
-                        'cores': row.get('n_cores', 0),
+                        'cores': row.get('cores', 0),
                         'gpus_per_task': row.get('gpus_per_task', 0),
-                        'zone_updates_per_sec_per_gpu': row.get('zone_updates_per_gpu'),
+                        'zone_updates_per_sec_per_gpu': row.get('zone_updates_per_sec_per_gpu'),
                         'elapsed_time': row.get('elapsed_time'),
                         'timestamp': ts
                     }
