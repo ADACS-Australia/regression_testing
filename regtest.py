@@ -2123,31 +2123,42 @@ def parse_ssh_command():
     if not ssh_cmd:
         return None
     
-    # Validate the command format: must be "regtest.py <command> <ini_file>"
+    # Validate the command format: must be "regtest.py <command> [ini_file]"
     # where <command> is one of: submit, check, extract, www, setup
+    # INI file is optional for www command
     valid_commands = ['submit', 'check', 'extract', 'www', 'setup']
     
     # Use regex to parse the command safely
-    # Pattern: optional path/regtest.py followed by command and INI file
-    pattern = r'^(?:.*/)?regtest\.py\s+(' + '|'.join(valid_commands) + r')\s+([a-zA-Z0-9_\-./]+\.ini)\s*$'
+    # Pattern: optional path/regtest.py followed by command and optional INI file
+    pattern = r'^(?:.*/)?regtest\.py\s+(' + '|'.join(valid_commands) + r')(?:\s+([a-zA-Z0-9_\-./]+\.ini))?\s*$'
     match = re.match(pattern, ssh_cmd)
     
     if not match:
         print(f"ERROR: Invalid SSH command: {ssh_cmd}", file=sys.stderr)
-        print(f"Valid format: regtest.py <command> <ini_file>", file=sys.stderr)
+        print(f"Valid format: regtest.py <command> [ini_file]", file=sys.stderr)
         print(f"Where <command> is one of: {', '.join(valid_commands)}", file=sys.stderr)
+        print(f"INI file is required for submit, check, extract, setup; optional for www", file=sys.stderr)
         sys.exit(1)
     
     command = match.group(1)
     ini_file = match.group(2)
     
-    # Security check: ensure INI file path doesn't contain suspicious patterns
-    if '..' in ini_file or ini_file.startswith('/'):
+    # Check if INI file is required but not provided
+    if command in ['submit', 'check', 'extract', 'setup'] and not ini_file:
+        print(f"ERROR: INI file is required for command '{command}'", file=sys.stderr)
+        sys.exit(1)
+    
+    # Security check: ensure INI file path doesn't contain suspicious patterns (if provided)
+    if ini_file and ('..' in ini_file or ini_file.startswith('/')):
         print(f"ERROR: Invalid INI file path: {ini_file}", file=sys.stderr)
         print("INI file must be a relative path without '..'", file=sys.stderr)
         sys.exit(1)
     
-    return [command, ini_file]
+    # Construct the validated argument list
+    if ini_file:
+        return [command, ini_file]
+    else:
+        return [command]
 
 
 def change_to_ini_directory(ini_file):
