@@ -72,25 +72,74 @@ The regression testing system can be triggered remotely using SSH with restricte
 
 ### Example authorized_keys entry:
 
+A complete example is provided in `authorized_keys_example`:
+
 ```
-command="cd /home/agray/src/cas/quokka/work && exec python3 regression_testing/regtest.py ${SSH_ORIGINAL_COMMAND}",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC... ci-runner@remote
+command="bash -l -c 'set -e; cd ${HOME}/src/cas/quokka/remote; [ -f setup/env.sh ] && source setup/env.sh; exec python regression_testing/regtest.py'",restrict ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFG21CqFMHf3gAt6dui9XkGbXDjenzvUJkgiRCYNQJK9 quokka
 ```
 
-### Key restrictions explained:
-- `command="..."` - Restricts the key to only run regtest.py
-- `no-port-forwarding` - Prevents SSH port forwarding
-- `no-X11-forwarding` - Prevents X11 display forwarding
-- `no-agent-forwarding` - Prevents SSH agent forwarding
-- `no-pty` - Prevents interactive terminal allocation
+### Key components explained:
+
+1. **`command="..."`** - Restricts this SSH key to only execute the specified command
+   - `bash -l -c` - Runs bash as a login shell to load user environment
+   - `set -e` - Exit immediately if any command fails
+   - `cd ${HOME}/src/cas/quokka/remote` - Change to the remote working directory
+   - `[ -f setup/env.sh ] && source setup/env.sh` - Source environment setup if it exists
+   - `exec python regression_testing/regtest.py` - Execute regtest.py (replaces shell process)
+
+2. **`restrict`** - Modern SSH restriction (equivalent to combining the following legacy options):
+   - `no-port-forwarding` - Prevents SSH port forwarding
+   - `no-X11-forwarding` - Prevents X11 display forwarding  
+   - `no-agent-forwarding` - Prevents SSH agent forwarding
+   - `no-pty` - Prevents interactive terminal allocation
+   - `no-user-rc` - Prevents execution of ~/.ssh/rc
+
+3. **SSH key** - The public key (ssh-ed25519 or ssh-rsa format)
+
+### Setting up the restricted key:
+
+1. **Add to ~/.ssh/authorized_keys**:
+   ```bash
+   cat authorized_keys_example >> ~/.ssh/authorized_keys
+   ```
+
+2. **Adjust the path in the command**:
+   - Replace `${HOME}/src/cas/quokka/remote` with your actual work directory
+   - The example uses `remote/` subdirectory for isolation
+
+3. **Create the environment setup** (optional):
+   ```bash
+   # Create setup/env.sh in your work directory
+   cat > ~/src/cas/quokka/remote/setup/env.sh << 'EOF'
+   #!/bin/bash
+   module load gcc/11.2.0
+   module load cuda/12.0
+   source /home/agray/src/cas/quokka/mk2025a/.venv/bin/activate
+   EOF
+   ```
 
 ### Valid remote commands:
+
+When the SSH key is properly configured, remote commands are automatically passed to regtest.py via SSH_ORIGINAL_COMMAND:
+
 ```bash
-# From remote system
-ssh agray@hpc.example.com "submit config_nt.ini"
-ssh agray@hpc.example.com "check config_nt.ini"
-ssh agray@hpc.example.com "extract config_nt.ini"
-ssh agray@hpc.example.com "www"  # INI file optional for www
+# From remote system (the SSH command is parsed from SSH_ORIGINAL_COMMAND)
+ssh -i ~/.ssh/quokka_key agray@hpc.example.com "submit config_nt.ini"
+ssh -i ~/.ssh/quokka_key agray@hpc.example.com "check config_nt.ini" 
+ssh -i ~/.ssh/quokka_key agray@hpc.example.com "extract config_nt.ini"
+ssh -i ~/.ssh/quokka_key agray@hpc.example.com "www"  # INI file optional for www
+ssh -i ~/.ssh/quokka_key agray@hpc.example.com "setup config_nt.ini"
 ```
+
+The regtest.py script automatically detects it's running via SSH and parses the command from the SSH_ORIGINAL_COMMAND environment variable.
+
+### Security notes:
+
+- The `restrict` option is the modern way to apply all security restrictions at once
+- The command restriction ensures the SSH key can ONLY run regtest.py
+- Using `exec` replaces the shell process, preventing shell escape attempts
+- The `set -e` ensures the command chain stops on any error
+- Environment setup is optional but allows module loading if needed
 
 ## C. Folder Structure
 
