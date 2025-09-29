@@ -143,60 +143,108 @@ The regtest.py script automatically detects it's running via SSH and parses the 
 
 ## C. Folder Structure
 
-The regression testing system uses the following directory structure:
+The complete regression testing environment in `/home/agray/src/cas/quokka-test/`:
 
 ```
-quokka/
-├── work/                          # Main working directory
-│   ├── regression_testing/        # Testing scripts and tools
-│   │   ├── regtest.py            # Main testing script
-│   │   ├── web_generator.py      # Web report generation
-│   │   ├── plotting.py           # Performance plotting
-│   │   └── web_utils.py          # Web utilities
-│   │
-│   ├── config_nt.ini             # Configuration for test suite
-│   ├── config_nt_A.ini           # Variant A configuration
-│   ├── config_nt_B.ini           # Variant B configuration
-│   │
-│   ├── A/                        # Test variant A results
-│   │   └── performance_test/
-│   │       └── 20250831123050/   # Timestamp directory
-│   │           ├── quokka/       # Quokka source (git repo)
-│   │           ├── results/      # Test output files
-│   │           │   ├── job_submission.parquet
-│   │           │   ├── job_output.parquet
-│   │           │   └── job_exit_status.parquet
-│   │           └── test_*/       # Individual test directories
-│   │
-│   ├── B/                        # Test variant B results
-│   ├── C/                        # Test variant C results
-│   └── reference/                # Reference baseline results
+quokka-test/
+├── config0/, config1/, config2/   # Test configuration directories
+│   ├── performance_test/          # Test run outputs
+│   │   └── 20250929171957/       # Timestamp directory
+│   │       ├── quokka/           # Quokka source clone
+│   │       ├── results/          # Performance data (parquet files)
+│   │       └── test_*/           # Individual test outputs
+│   ├── tests_input/              # Test input files
+│   │   ├── blast_32.in
+│   │   ├── blast_unigrid_128_regression.in
+│   │   └── radhydro_shell_128.in
+│   ├── config.yaml               # Converted YAML for hpc_performance_testing
+│   ├── env.sh                    # Environment setup script
+│   └── test_instance.yaml        # Job submission metadata
 │
-├── www/                          # Web output directory
+├── hpc_performance_testing/       # MKrumholz_2025a package (batch_test branch)
+│   ├── cli/                      # Command-line interface
+│   │   └── pipeline.py           # Main CLI entry point
+│   ├── config_yaml/              # Example configurations
+│   │   ├── config_nt.yaml        # Ngarrgu-Tindebeek config
+│   │   ├── config_gadi.yaml      # Gadi config
+│   │   ├── config_setonix.yaml   # Setonix config
+│   │   └── config_frontier.yaml  # Frontier config
+│   ├── hpc_env/                  # Environment setup scripts
+│   ├── python/                   # Python package source
+│   │   └── hpc_performance_testing/
+│   ├── pyproject.toml            # Poetry configuration with dependencies
+│   └── poetry.lock               # Locked dependency versions
+│
+├── regression_testing/            # Regression testing scripts (mk2025a branch)
+│   ├── regtest.py               # Main test orchestration script
+│   ├── web_generator.py         # HTML report generation
+│   ├── plotting.py              # Performance plotting (matplotlib)
+│   ├── plotting_plotly.py       # Interactive plots (plotly)
+│   ├── web_utils.py             # Web generation utilities
+│   ├── comparison.py            # Performance comparison logic
+│   ├── trend_analysis.py        # Trend analysis over time
+│   ├── web_styling.py           # CSS and HTML templates
+│   ├── web_logging.py           # Logging utilities
+│   ├── BATCH.md                 # This documentation
+│   ├── authorized_keys_example  # SSH key setup example
+│   └── requirements.txt         # Python dependencies
+│
+├── setup/                        # Shared environment configuration
+│   ├── env.sh                   # Module loading script
+│   └── tests_input/             # Shared test input files
+│
+├── verse/                        # Python virtual environment
+│   ├── bin/                     # Python executables and scripts
+│   ├── lib/python3.11/          # Installed packages
+│   └── pyvenv.cfg               # Virtual environment config
+│
+├── venv -> verse                 # Symlink for compatibility
+│
+├── www/                          # Generated web reports
 │   ├── index.html               # Main dashboard
-│   ├── A/                       # Variant A web pages
-│   │   ├── index.html          # Folder summary
-│   │   ├── trends.html         # Performance trends
-│   │   └── 20250831123050/     # Timestamp pages
-│   │       └── index.html
-│   ├── B/                       # Variant B web pages
-│   ├── C/                       # Variant C web pages
-│   └── reference/               # Reference web pages
+│   ├── assets/                  # Static assets (CSS, JS)
+│   └── config0/, config1/, config2/  # Per-config reports
+│       ├── index.html           # Config summary
+│       ├── trends.html          # Performance trends
+│       └── 20250929171957/      # Timestamp-specific reports
+│           └── index.html       # Detailed test results
 │
-├── setup/                       # Environment setup scripts
-│   ├── env_setup_ucx.sh       # UCX-enabled MPI environment
-│   └── env_setup_ompi.sh      # OpenMPI environment
-│
-└── mk2025a/                    # Performance testing package
-    ├── pyproject.toml          # Python package configuration
-    └── .venv/                  # Virtual environment
+├── config_nt_0.ini              # Test configuration 0
+├── config_nt_1.ini              # Test configuration 1
+├── config_nt_2.ini              # Test configuration 2
+├── quokka-setup.sh              # Automated setup script
+├── quokka-setup.tar.xz          # Setup archive with env scripts
+└── runtime_err.log              # Error log from test runs
 ```
 
-### Key directories:
-- **work/**: Contains all test configurations and results
-- **www/**: Generated HTML reports and visualizations
-- **setup/**: Module loading and environment scripts
-- **mk2025a/**: Python package for HPC performance testing
+### Key components:
+
+- **config*/** - Working directories for different test configurations, each containing:
+  - Performance test outputs with timestamps
+  - Test input files
+  - Generated YAML configurations
+  - Job submission metadata
+
+- **hpc_performance_testing/** - The batch job submission framework:
+  - Handles SLURM/PBS job submission
+  - Manages performance data extraction
+  - Creates parquet files for analysis
+
+- **regression_testing/** - Test orchestration and reporting:
+  - Coordinates setup, submit, check, extract, www workflow
+  - Generates HTML reports with plots and tables
+  - Handles remote execution via SSH
+
+- **verse/** - Consolidated Python environment with all dependencies:
+  - hpc_performance_testing package
+  - matplotlib, numpy, pandas for analysis
+  - plotly for interactive visualization
+  - PyYAML for configuration handling
+
+- **www/** - Web-accessible test results:
+  - Performance plots and comparison tables
+  - Trend analysis across multiple runs
+  - Organized by configuration and timestamp
 
 ## D. Running regtest Commands
 
@@ -355,16 +403,80 @@ jobs:
         run: |
           echo "$SSH_KEY" > ssh_key
           chmod 600 ssh_key
-          
+
           # Submit tests
           ssh -i ssh_key -o StrictHostKeyChecking=no \
             agray@hpc.example.com "submit config_nt.ini"
-          
+
           # Wait and check (simplified - real CI would loop)
           sleep 300
           ssh -i ssh_key -o StrictHostKeyChecking=no \
             agray@hpc.example.com "check config_nt.ini"
 ```
+
+##### Setting up GitHub Secrets for SSH Access
+
+To securely connect to your HPC cluster from GitHub Actions, you need to configure two secrets: `QUOKKA_SSH_KEY` and `QUOKKA_KNOWN_HOSTS`. These secrets store sensitive SSH credentials securely.
+
+**Step-by-step setup:**
+
+1. **Generate an SSH key pair** (if you haven't already):
+   ```bash
+   ssh-keygen -t ed25519 -C "quokka-ci" -f ~/.ssh/quokka_ci_key -N ""
+   ```
+   This creates two files: `quokka_ci_key` (private) and `quokka_ci_key.pub` (public)
+
+2. **Add the public key to HPC authorized_keys**:
+   ```bash
+   # On your HPC system, add the restricted command entry:
+   echo 'command="bash -l -c '\''set -e; cd ${HOME}/src/cas/quokka/remote; [ -f setup/env.sh ] && source setup/env.sh; exec python regression_testing/regtest.py'\'\'",restrict' $(cat ~/.ssh/quokka_ci_key.pub) >> ~/.ssh/authorized_keys
+   ```
+
+3. **Get the HPC host's SSH fingerprint**:
+   ```bash
+   ssh-keyscan -H hpc.example.com > known_hosts
+   # Verify the fingerprint matches your HPC system's actual fingerprint
+   ```
+
+4. **Create the GitHub secrets**:
+   - Go to your GitHub repository (e.g., https://github.com/gusgw/quokka-ci-demo)
+   - Navigate to **Settings** → **Secrets and variables** → **Actions**
+   - Click **New repository secret**
+
+5. **Add QUOKKA_SSH_KEY**:
+   - Name: `QUOKKA_SSH_KEY`
+   - Value: Copy the entire contents of `~/.ssh/quokka_ci_key` (the private key)
+   ```bash
+   cat ~/.ssh/quokka_ci_key
+   # Copy everything including -----BEGIN and -----END lines
+   ```
+
+6. **Add QUOKKA_KNOWN_HOSTS**:
+   - Name: `QUOKKA_KNOWN_HOSTS`
+   - Value: Copy the contents of the `known_hosts` file from step 3
+   ```bash
+   cat known_hosts
+   # Copy the entire output
+   ```
+
+7. **Update your workflow** to use these secrets:
+   ```yaml
+   - name: Setup SSH
+     run: |
+       mkdir -p ~/.ssh
+       echo "${{ secrets.QUOKKA_SSH_KEY }}" > ~/.ssh/id_rsa
+       echo "${{ secrets.QUOKKA_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+       chmod 600 ~/.ssh/id_rsa
+       chmod 644 ~/.ssh/known_hosts
+   ```
+
+**Security notes:**
+- Never commit private keys to your repository
+- Use repository secrets for all sensitive data
+- Consider using environment-specific secrets for different HPC systems
+- Rotate SSH keys periodically
+
+For more details, see the [GitHub documentation on encrypted secrets](https://docs.github.com/en/actions/security-guides/encrypted-secrets).
 
 #### 2. GitLab CI example (.gitlab-ci.yml):
 
