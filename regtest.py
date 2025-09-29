@@ -460,7 +460,7 @@ def handle_batch_setup(args, ini_file):
             return 1
         
         # Find env_*.sh script
-        env_scripts = glob.glob(os.path.join(setup_folder, "env_*.sh"))
+        env_scripts = glob.glob(os.path.join(setup_folder, "env*.sh"))
         if not env_scripts:
             print_error(f"No env_*.sh script found in {setup_folder}")
             return 1
