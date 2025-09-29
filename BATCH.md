@@ -264,20 +264,20 @@ jobs:
   submit-regression-tests:
     name: Submit tests to HPC
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Setup SSH
         run: |
           # Create SSH directory
           mkdir -p ~/.ssh
-          
+
           # Add the private key
           echo "${{ secrets.QUOKKA_SSH_KEY }}" > ~/.ssh/id_ed25519-quokka
           chmod 600 ~/.ssh/id_ed25519-quokka
-          
+
           # Add known hosts
           echo "${{ secrets.QUOKKA_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
-          
+
           # Create SSH config
           cat > ~/.ssh/config << 'EOF'
           Host quokka
@@ -288,13 +288,76 @@ jobs:
               StrictHostKeyChecking yes
           EOF
           chmod 600 ~/.ssh/config
-      
+
       - name: Submit regression tests
         run: |
           echo "Submitting regression tests to HPC..."
           ssh quokka "regtest.py submit config_nt_0.ini"
           echo "✓ Regression tests submitted successfully"
 ```
+
+### Setting up GitHub Secrets for SSH Access
+
+To securely connect to your HPC cluster from GitHub Actions, you need to configure two secrets: `QUOKKA_SSH_KEY` and `QUOKKA_KNOWN_HOSTS`. These secrets store sensitive SSH credentials securely.
+
+#### Step-by-step setup:
+
+1. **Generate an SSH key pair** (if you haven't already):
+   ```bash
+   ssh-keygen -t ed25519 -C "quokka-ci" -f ~/.ssh/id_ed25519-quokka -N ""
+   ```
+   This creates two files: `id_ed25519-quokka` (private) and `id_ed25519-quokka.pub` (public)
+
+2. **Add the public key to HPC authorized_keys**:
+   ```bash
+   # On your HPC system, add the restricted command entry:
+   cat ~/.ssh/id_ed25519-quokka.pub | ssh tooarrana2.hpc.swin.edu.au \
+     "cat >> ~/.ssh/authorized_keys"
+   ```
+   Then modify the entry on the HPC to add command restrictions as shown in the authorized_keys section above.
+
+3. **Get the HPC host's SSH fingerprint**:
+   ```bash
+   ssh-keyscan -H tooarrana2.hpc.swin.edu.au > known_hosts_temp
+   # Verify the fingerprint matches your HPC system's actual fingerprint
+   ```
+
+4. **Create the GitHub secrets**:
+   - Go to your GitHub repository (e.g., https://github.com/gusgw/quokka-ci-demo)
+   - Navigate to **Settings** → **Secrets and variables** → **Actions**
+   - Click **New repository secret**
+
+5. **Add QUOKKA_SSH_KEY secret**:
+   - Name: `QUOKKA_SSH_KEY`
+   - Secret: Copy the entire contents of your private key:
+   ```bash
+   cat ~/.ssh/id_ed25519-quokka
+   # Copy everything including -----BEGIN and -----END lines
+   ```
+   - Click "Add secret"
+
+6. **Add QUOKKA_KNOWN_HOSTS secret**:
+   - Name: `QUOKKA_KNOWN_HOSTS`
+   - Secret: Copy the contents of the known_hosts file:
+   ```bash
+   cat known_hosts_temp
+   # Copy the entire output
+   ```
+   - Click "Add secret"
+
+7. **Test the workflow**:
+   - Push a commit to the development branch
+   - Check Actions tab in GitHub to see if the workflow runs successfully
+   - Verify on HPC that jobs were submitted
+
+#### Security notes:
+- Never commit private keys to your repository
+- Use repository secrets for all sensitive data
+- Consider using environment-specific secrets for different HPC systems
+- Rotate SSH keys periodically
+- Limit the SSH key permissions using command restrictions in authorized_keys
+
+For more details, see the [GitHub documentation on encrypted secrets](https://docs.github.com/en/actions/security-guides/encrypted-secrets).
 
 ## Folder Structure
 
