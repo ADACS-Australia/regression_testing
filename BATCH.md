@@ -100,6 +100,8 @@ The script `quokka-setup.sh` sets up this restricted key in your
 KEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFG21CqFMHf3gAt6dui9XkGbXDjenzvUJkgiRCYNQJK9 quokka'
 ```
 
+See below the section on setting up GitHub secrets if you need to know how to create this public key.
+
 #### Key components explained:
 
 Note that `quokka-setup.sh` configures the path used here.
@@ -309,12 +311,8 @@ To securely connect to your HPC cluster from GitHub Actions, you need to configu
    This creates two files: `id_ed25519-quokka` (private) and `id_ed25519-quokka.pub` (public)
 
 2. **Add the public key to HPC authorized_keys**:
-   ```bash
-   # On your HPC system, add the restricted command entry:
-   cat ~/.ssh/id_ed25519-quokka.pub | ssh tooarrana2.hpc.swin.edu.au \
-     "cat >> ~/.ssh/authorized_keys"
-   ```
-   Then modify the entry on the HPC to add command restrictions as shown in the authorized_keys section above.
+
+   The public key is the one used to set up restricted access in the instructions above.
 
 3. **Get the HPC host's SSH fingerprint**:
    ```bash
@@ -338,11 +336,7 @@ To securely connect to your HPC cluster from GitHub Actions, you need to configu
 
 6. **Add QUOKKA_KNOWN_HOSTS secret**:
    - Name: `QUOKKA_KNOWN_HOSTS`
-   - Secret: Copy the contents of the known_hosts file:
-   ```bash
-   cat known_hosts_temp
-   # Copy the entire output
-   ```
+   - Secret: Copy the contents of the known_hosts file created above: `known_hosts_temp`
    - Click "Add secret"
 
 7. **Test the workflow**:
