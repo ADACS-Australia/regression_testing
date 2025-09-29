@@ -19,7 +19,8 @@ from web_utils import (
     aggregate_folder_data,
     get_reference_data,
     extract_performance_data,
-    format_missing_data_message
+    format_missing_data_message,
+    get_quokka_version
 )
 
 # Import plotting utilities
@@ -43,7 +44,7 @@ from trend_analysis import (
     create_performance_trend_plot,
     analyze_weak_scaling,
     create_weak_scaling_plot,
-    generate_trend_statistics
+    calculate_trend_statistics
 )
 from web_styling import (
     get_enhanced_css,
@@ -498,7 +499,7 @@ def create_folder_page(work_dir: str, web_output_dir: str, folder_name: str) -> 
         entry_info = ""
         if data is not None:
             entry_count = len(data)
-            perf_count = data['zone_updates_per_gpu'].notna().sum() if 'zone_updates_per_gpu' in data.columns else 0
+            perf_count = data['zone_updates_per_sec_per_gpu'].notna().sum() if 'zone_updates_per_sec_per_gpu' in data.columns else 0
             entry_info = f" - {entry_count} entries ({perf_count} with performance data)"
         
         content += f"""
@@ -524,9 +525,9 @@ def create_folder_page(work_dir: str, web_output_dir: str, folder_name: str) -> 
             for _, row in perf_df.iterrows():
                 entry = {
                     'test_name': row.get('test_name', 'unknown'),
-                    'cores': row.get('n_cores', 0),
+                    'cores': row.get('cores', 0),
                     'gpus_per_task': row.get('gpus_per_task', 0),
-                    'zone_updates_per_sec_per_gpu': row.get('zone_updates_per_gpu') if pd.notna(row.get('zone_updates_per_gpu')) else 'N/A',
+                    'zone_updates_per_sec_per_gpu': row.get('zone_updates_per_sec_per_gpu') if pd.notna(row.get('zone_updates_per_sec_per_gpu')) else 'N/A',
                     'elapsed_time': f"{row.get('elapsed_time', 0):.2f}" if pd.notna(row.get('elapsed_time')) else 'N/A'
                 }
                 perf_data.append(entry)
@@ -534,14 +535,38 @@ def create_folder_page(work_dir: str, web_output_dir: str, folder_name: str) -> 
             if any(e.get('zone_updates_per_sec_per_gpu') and e['zone_updates_per_sec_per_gpu'] != 'N/A' for e in perf_data):
                 timestamps_with_data[ts] = perf_data
     
-    if len(timestamps_with_data) > 1:
-        comparison_plot = create_comparison_plot(timestamps_with_data, folder_name)
-        content += f"""
-        <h2>Performance Comparison</h2>
-        <div class="plot-container">
-            {comparison_plot}
-        </div>
-        """
+    # Show performance plot if we have any data
+    if len(timestamps_with_data) >= 1:
+        if len(timestamps_with_data) > 1:
+            # Multiple timestamps - show comparison
+            # Get versions for all timestamps
+            quokka_versions = {}
+            for ts in timestamps_with_data.keys():
+                version = get_quokka_version(work_dir, folder_name, ts)
+                if version:
+                    quokka_versions[ts] = version
+            
+            comparison_plot = create_comparison_plot(timestamps_with_data, folder_name, quokka_versions)
+            content += f"""
+            <h2>Performance Comparison</h2>
+            <div class="plot-container">
+                {comparison_plot}
+            </div>
+            """
+        else:
+            # Single timestamp - show regular performance plot
+            single_ts = list(timestamps_with_data.keys())[0]
+            single_data = timestamps_with_data[single_ts]
+            single_version = get_quokka_version(work_dir, folder_name, single_ts)
+            perf_plot = create_performance_plot(single_data, 
+                                               title=f"Performance - {folder_name}",
+                                               quokka_version=single_version)
+            content += f"""
+            <h2>Performance</h2>
+            <div class="plot-container">
+                {perf_plot}
+            </div>
+            """
     
     content += """
         <h2>Trend Analysis</h2>
@@ -587,10 +612,12 @@ def create_timestamp_page(
     timestamp_dir = os.path.join(web_output_dir, folder_name, timestamp)
     os.makedirs(timestamp_dir, exist_ok=True)
     
-    # Build HTML content
+    # Get Quokka version for display
+    quokka_version_display = get_quokka_version(work_dir, folder_name, timestamp)
+    version_text = f" (Quokka: {quokka_version_display})" if quokka_version_display else ""
+    
+    # Build HTML content (no H1 needed - template provides it via heading parameter)
     content = f"""
-        <h1>{folder_name} - {timestamp}</h1>
-        
         <div class="nav-links">
             <a href="../../index.html">← Main Index</a> | 
             <a href="../index.html">← {folder_name} Index</a>
@@ -609,17 +636,17 @@ def create_timestamp_page(
         """
     else:
         # Add summary statistics
-        if 'zone_updates_per_gpu' in data.columns:
-            perf_data = data[data['zone_updates_per_gpu'].notna()]
+        if 'zone_updates_per_sec_per_gpu' in data.columns:
+            perf_data = data[data['zone_updates_per_sec_per_gpu'].notna()]
             if not perf_data.empty:
                 content += f"""
                 <div class="performance-summary">
                     <h3>Performance Summary</h3>
                     <strong>Total Entries:</strong> {len(data)}<br>
                     <strong>Entries with Performance Data:</strong> {len(perf_data)}<br>
-                    <strong>Min Performance:</strong> {perf_data['zone_updates_per_gpu'].min():.2e} zone updates/sec/GPU<br>
-                    <strong>Max Performance:</strong> {perf_data['zone_updates_per_gpu'].max():.2e} zone updates/sec/GPU<br>
-                    <strong>Mean Performance:</strong> {perf_data['zone_updates_per_gpu'].mean():.2e} zone updates/sec/GPU
+                    <strong>Min Performance:</strong> {perf_data['zone_updates_per_sec_per_gpu'].min():.2e} zone updates/sec/GPU<br>
+                    <strong>Max Performance:</strong> {perf_data['zone_updates_per_sec_per_gpu'].max():.2e} zone updates/sec/GPU<br>
+                    <strong>Mean Performance:</strong> {perf_data['zone_updates_per_sec_per_gpu'].mean():.2e} zone updates/sec/GPU
                 </div>
                 """
         
@@ -628,9 +655,9 @@ def create_timestamp_page(
             for _, row in data.iterrows():
                 entry = {
                     'test_name': row.get('test_name', 'unknown'),
-                    'cores': row.get('n_cores', 0),
+                    'cores': row.get('cores', 0),
                     'gpus_per_task': row.get('gpus_per_task', 0),
-                    'zone_updates_per_sec_per_gpu': row.get('zone_updates_per_gpu') if pd.notna(row.get('zone_updates_per_gpu')) else 'N/A',
+                    'zone_updates_per_sec_per_gpu': row.get('zone_updates_per_sec_per_gpu') if pd.notna(row.get('zone_updates_per_sec_per_gpu')) else 'N/A',
                     'elapsed_time': f"{row.get('elapsed_time', 0):.2f}" if pd.notna(row.get('elapsed_time')) else 'N/A',
                     'status': row.get('status', 'PENDING')
                 }
@@ -657,11 +684,15 @@ def create_timestamp_page(
             for test_entries in reference_data_dict.values():
                 reference_data.extend(test_entries)
         
+        # Get Quokka version for this timestamp
+        quokka_version = get_quokka_version(work_dir, folder_name, timestamp)
+        
         # Generate performance plot
         plot_html = create_performance_plot(
             folder_data, 
             title=f"Performance Scaling - {folder_name}/{timestamp}",
-            reference_data=reference_data
+            reference_data=reference_data,
+            quokka_version=quokka_version
         )
         
         content += f"""
@@ -769,6 +800,7 @@ def create_timestamp_page(
     # Generate final HTML
     html = get_html_template().format(
         title=f"Quokka Regression Testing - {folder_name}/{timestamp}",
+        heading=f"Quokka Regression Testing - {folder_name}/{timestamp}{version_text}",
         content=content,
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     )
@@ -806,7 +838,7 @@ def create_trends_page(work_dir: str, web_output_dir: str, folder_name: str) -> 
     trend_data = collect_trend_data(folder_path, timestamps)
     
     # Generate trend statistics
-    trend_stats = generate_trend_statistics(trend_data)
+    trend_stats = calculate_trend_statistics(trend_data)
     
     # Build page content
     content = f"""

@@ -5,11 +5,43 @@ Utility functions for web report generation from regression test data.
 
 import os
 import re
+import subprocess
 import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import warnings
+
+
+def get_quokka_version(work_dir: str, folder_name: str, timestamp: str) -> Optional[str]:
+    """
+    Extract the Quokka git commit hash for a given timestamp.
+    
+    Args:
+        work_dir: Base work directory
+        folder_name: Folder name (e.g., 'A', 'B', 'C', 'reference')
+        timestamp: Timestamp string
+        
+    Returns:
+        6-character git commit hash or None if not found
+    """
+    quokka_path = os.path.join(work_dir, folder_name, 'performance_test', timestamp, 'quokka')
+    
+    if not os.path.exists(quokka_path):
+        return None
+    
+    try:
+        # Get the short commit hash (6 characters)
+        result = subprocess.run(
+            ['git', 'rev-parse', '--short=6', 'HEAD'],
+            cwd=quokka_path,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return result.stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
 
 
 def extract_gpu_count_from_script(script_path: str) -> Optional[int]:
@@ -163,11 +195,21 @@ def extract_performance_data(
         gpus_per_task = extract_gpu_count_from_script(script_path)
         if gpus_per_task is None:
             gpus_per_task = 0  # Default to CPU-only
-            
+        
+        # Try to find job_id from output file in same directory
+        job_id = None
+        script_dir = os.path.dirname(script_path)
+        for f in os.listdir(script_dir):
+            if f.endswith('.out') and 'JobID_' in f:
+                id_match = re.search(r'JobID_(\d+)', f)
+                if id_match:
+                    job_id = id_match.group(1)
+                    break
+                    
         # Find corresponding job in submission data
         job_info = {
             'test_name': test_name,
-            'n_cores': n_cores,
+            'cores': n_cores,  # Changed from 'n_cores' to 'cores' to match expected field name
             'gpus_per_task': gpus_per_task,
             'timestamp': timestamp,
             'folder': os.path.basename(folder_path.rstrip('/'))
@@ -175,12 +217,22 @@ def extract_performance_data(
         
         # Try to get performance data if available
         if data['output'] is not None and not data['output'].empty:
-            # Match by job characteristics (this is simplified, may need job_id matching)
-            # Convert n_mpi_processes to int for comparison
-            output_row = data['output'][data['output']['n_mpi_processes'].astype(str) == str(n_cores)]
-            if not output_row.empty:
-                output_row = output_row.iloc[0]
-                
+            # Try to match by job_id first, then fall back to n_mpi_processes
+            output_row = None
+            if job_id and 'job_id' in data['output'].columns:
+                matches = data['output'][data['output']['job_id'] == job_id]
+                if not matches.empty:
+                    output_row = matches.iloc[0]
+            
+            # Fall back to matching by n_mpi_processes if no job_id match
+            if output_row is None:
+                matches = data['output'][data['output']['n_mpi_processes'].astype(str) == str(n_cores)]
+                if not matches.empty:
+                    # For multiple matches with same core count, try to pick one not already used
+                    # This is a heuristic approach when job_id matching fails
+                    output_row = matches.iloc[0]
+            
+            if output_row is not None:
                 # Extract performance metrics
                 if 'zone_update_megaupdates_per_second' in output_row:
                     zone_updates_per_sec = float(output_row['zone_update_megaupdates_per_second']) * 1e6
@@ -196,19 +248,24 @@ def extract_performance_data(
                     
                 if zone_updates_per_sec:
                     job_info['zone_updates_per_sec'] = zone_updates_per_sec
-                    job_info['zone_updates_per_gpu'] = calculate_zone_updates_per_gpu(
+                    zone_updates_per_gpu = calculate_zone_updates_per_gpu(
                         zone_updates_per_sec, n_cores, gpus_per_task
                     )
+                    job_info['zone_updates_per_sec_per_gpu'] = zone_updates_per_gpu
                     
                 # Get elapsed time
                 if 'elapse_time' in output_row:
                     job_info['elapsed_time'] = float(output_row['elapse_time'])
                     
-        # Check job status if available
-        if data['status'] is not None and not data['status'].empty:
-            status_row = data['status'][data['status'].get('job_id', '') == job_info.get('job_id', '')]
-            if not status_row.empty:
-                job_info['status'] = status_row.iloc[0].get('state', 'UNKNOWN')
+        # Determine job status
+        # If we have performance data, the job must be completed
+        if job_info.get('zone_updates_per_sec_per_gpu') and job_info['zone_updates_per_sec_per_gpu'] != 'N/A':
+            job_info['status'] = 'COMPLETED'
+        elif data['status'] is not None and not data['status'].empty and job_id:
+            # Check exit status data if available
+            status_matches = data['status'][data['status']['job_id'] == job_id]
+            if not status_matches.empty:
+                job_info['status'] = status_matches.iloc[0].get('state', 'UNKNOWN')
             else:
                 job_info['status'] = 'PENDING'
         else:

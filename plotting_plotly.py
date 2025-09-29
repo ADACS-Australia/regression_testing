@@ -1,16 +1,14 @@
 #!/usr/bin/env python
 """
 Plotting utilities for regression testing web reports.
-Creates static plots using matplotlib for performance visualization.
+Creates interactive plots using plotly for performance visualization.
 """
 
 import os
-import io
-import base64
+import json
 from typing import List, Dict, Optional, Tuple, Any
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import pandas as pd
 from pathlib import Path
 import numpy as np
@@ -18,19 +16,17 @@ import numpy as np
 
 def create_performance_plot(data_entries: List[Dict], 
                           title: str = "Performance Scaling",
-                          reference_data: Optional[List[Dict]] = None,
-                          quokka_version: Optional[str] = None) -> str:
+                          reference_data: Optional[List[Dict]] = None) -> str:
     """
-    Create a performance plot showing zone updates/sec/GPU vs cores.
+    Create an interactive performance plot showing zone updates/sec/GPU vs cores.
     
     Args:
         data_entries: List of dictionaries with performance data
         title: Plot title
         reference_data: Optional reference data for comparison
-        quokka_version: Optional Quokka git commit hash to include in title
         
     Returns:
-        HTML string containing the embedded base64 image
+        HTML string containing the embedded plotly plot
     """
     if not data_entries:
         return '<div style="padding: 20px; text-align: center; color: #666;">No performance data available</div>'
@@ -50,7 +46,7 @@ def create_performance_plot(data_entries: List[Dict],
         test_groups[test_name].append(entry)
     
     # Create the plot
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig = go.Figure()
     
     # Color palette for different tests
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
@@ -63,12 +59,31 @@ def create_performance_plot(data_entries: List[Dict],
         
         cores = [e['cores'] for e in entries]
         performance = [float(e['zone_updates_per_sec_per_gpu']) for e in entries]
+        gpu_counts = [e.get('gpus_per_task', 1) for e in entries]
+        elapsed_times = [e.get('elapsed_time', 'N/A') for e in entries]
         
-        # Always use scatter points without lines to avoid misleading connections
-        ax.loglog(cores, performance, 
-                  marker='o', markersize=8, linestyle='none',
-                  color=colors[i % len(colors)], 
-                  label=test_name)
+        # Create hover text with more information
+        hover_text = []
+        for j, e in enumerate(entries):
+            hover_info = (
+                f"Test: {test_name}<br>"
+                f"Cores: {e['cores']}<br>"
+                f"GPUs/Task: {gpu_counts[j]}<br>"
+                f"Performance: {performance[j]:.2e} zone updates/sec/GPU<br>"
+                f"Elapsed Time: {elapsed_times[j]}"
+            )
+            hover_text.append(hover_info)
+        
+        fig.add_trace(go.Scatter(
+            x=cores,
+            y=performance,
+            mode='lines+markers',
+            name=test_name,
+            line=dict(color=colors[i % len(colors)], width=2),
+            marker=dict(size=8),
+            hovertemplate='%{text}',
+            text=hover_text
+        ))
     
     # Add reference data if provided
     if reference_data:
@@ -86,48 +101,77 @@ def create_performance_plot(data_entries: List[Dict],
                 cores = [e['cores'] for e in entries]
                 performance = [float(e['zone_updates_per_sec_per_gpu']) for e in entries]
                 
-                ax.loglog(cores, performance,
-                         marker='D', markersize=6, linestyle='none',
-                         alpha=0.7,
-                         label=f"{test_name} (reference)")
+                fig.add_trace(go.Scatter(
+                    x=cores,
+                    y=performance,
+                    mode='lines+markers',
+                    name=f"{test_name} (reference)",
+                    line=dict(dash='dash', width=2),
+                    marker=dict(size=6, symbol='diamond'),
+                    opacity=0.7
+                ))
     
     # Update layout
-    ax.set_xlabel('Number of Cores', fontsize=12)
-    ax.set_ylabel('Zone Updates/sec/GPU', fontsize=12)
+    fig.update_layout(
+        title=title,
+        xaxis_title="Number of Cores",
+        yaxis_title="Zone Updates/sec/GPU",
+        xaxis=dict(
+            type='log',
+            gridcolor='lightgray',
+            showgrid=True,
+            zeroline=False
+        ),
+        yaxis=dict(
+            type='log',
+            gridcolor='lightgray',
+            showgrid=True,
+            zeroline=False,
+            exponentformat='e'
+        ),
+        hovermode='closest',
+        template='plotly_white',
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="bottom",
+            y=0.01,
+            xanchor="right",
+            x=0.99
+        ),
+        height=500
+    )
     
-    # Include Quokka version in title if available
-    if quokka_version:
-        full_title = f"{title} (Quokka: {quokka_version})"
-    else:
-        full_title = title
-    ax.set_title(full_title, fontsize=14, fontweight='bold')
+    # Convert to HTML
+    config = {
+        'displayModeBar': True,
+        'displaylogo': False,
+        'modeBarButtonsToRemove': ['pan2d', 'lasso2d', 'select2d'],
+        'toImageButtonOptions': {
+            'format': 'png',
+            'filename': 'performance_plot',
+            'height': 500,
+            'width': 800,
+            'scale': 2
+        }
+    }
     
-    ax.grid(True, which="both", ls="-", alpha=0.2)
-    ax.legend(loc='lower left', fontsize=10)
-    
-    # Convert to base64
-    buffer = io.BytesIO()
-    plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
-    buffer.seek(0)
-    img_base64 = base64.b64encode(buffer.read()).decode()
-    plt.close()
-    
-    return f'<img src="data:image/png;base64,{img_base64}" style="max-width: 100%; height: auto;" alt="{title}">'
+    # Use 'cdn' with latest plotly version
+    return fig.to_html(include_plotlyjs='https://cdn.plot.ly/plotly-latest.min.js', 
+                      div_id="performance-plot", config=config)
 
 
 def create_comparison_plot(timestamps_data: Dict[str, List[Dict]], 
-                         folder_name: str,
-                         quokka_versions: Optional[Dict[str, str]] = None) -> str:
+                         folder_name: str) -> str:
     """
     Create a comparison plot between multiple timestamps in the same folder.
     
     Args:
         timestamps_data: Dictionary mapping timestamp to list of performance entries
         folder_name: Name of the folder being compared
-        quokka_versions: Optional dict mapping timestamp to Quokka version
         
     Returns:
-        HTML string containing the embedded base64 image
+        HTML string containing the embedded plotly plot
     """
     if not timestamps_data:
         return '<div style="padding: 20px; text-align: center; color: #666;">No data available for comparison</div>'
@@ -142,20 +186,16 @@ def create_comparison_plot(timestamps_data: Dict[str, List[Dict]],
     if not all_test_names:
         return '<div style="padding: 20px; text-align: center; color: #666;">No completed runs for comparison</div>'
     
-    fig, ax = plt.subplots(figsize=(12, 7))
+    fig = go.Figure()
     
     # Color palette for different timestamps
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
               '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
     
-    # Line styles for different tests
-    line_styles = ['-', '--', '-.', ':']
-    
     # Sort timestamps for consistent ordering
     sorted_timestamps = sorted(timestamps_data.keys())
     
     # Plot each timestamp's data
-    plot_handles = []
     for t_idx, timestamp in enumerate(sorted_timestamps):
         entries = timestamps_data[timestamp]
         valid_entries = [e for e in entries if e.get('zone_updates_per_sec_per_gpu') and e['zone_updates_per_sec_per_gpu'] != 'N/A']
@@ -171,44 +211,64 @@ def create_comparison_plot(timestamps_data: Dict[str, List[Dict]],
                 test_groups[test_name] = []
             test_groups[test_name].append(entry)
         
-        # Format timestamp for display
-        ts_display = f"{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]} {timestamp[8:10]}:{timestamp[10:12]}"
-        
-        # Add Quokka version if available
-        if quokka_versions and timestamp in quokka_versions:
-            version_str = f" [v{quokka_versions[timestamp]}]"
-        else:
-            version_str = ""
-        
         # Plot each test
-        for test_idx, (test_name, test_entries) in enumerate(test_groups.items()):
+        for test_name, test_entries in test_groups.items():
             test_entries.sort(key=lambda x: x['cores'])
             cores = [e['cores'] for e in test_entries]
             performance = [float(e['zone_updates_per_sec_per_gpu']) for e in test_entries]
             
-            handle = ax.loglog(cores, performance,
-                     marker='o', markersize=6, linestyle='none',
-                     color=colors[t_idx % len(colors)],
-                     label=f"{test_name} ({ts_display}){version_str}")
-            plot_handles.extend(handle)
+            # Format timestamp for display
+            ts_display = f"{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]} {timestamp[8:10]}:{timestamp[10:12]}"
+            
+            fig.add_trace(go.Scatter(
+                x=cores,
+                y=performance,
+                mode='lines+markers',
+                name=f"{test_name} ({ts_display})",
+                line=dict(color=colors[t_idx % len(colors)], width=2),
+                marker=dict(size=8),
+                legendgroup=timestamp
+            ))
     
     # Update layout
-    ax.set_xlabel('Number of Cores', fontsize=12)
-    ax.set_ylabel('Zone Updates/sec/GPU', fontsize=12)
-    ax.set_title(f'Performance Comparison - {folder_name}', fontsize=14, fontweight='bold')
-    ax.grid(True, which="both", ls="-", alpha=0.2)
+    fig.update_layout(
+        title=f"Performance Comparison - {folder_name}",
+        xaxis_title="Number of Cores",
+        yaxis_title="Zone Updates/sec/GPU",
+        xaxis=dict(
+            type='log',
+            gridcolor='lightgray',
+            showgrid=True,
+            zeroline=False
+        ),
+        yaxis=dict(
+            type='log',
+            gridcolor='lightgray',
+            showgrid=True,
+            zeroline=False,
+            exponentformat='e'
+        ),
+        hovermode='closest',
+        template='plotly_white',
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=1.01
+        ),
+        height=600
+    )
     
-    # Position legend outside plot area
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=9)
+    config = {
+        'displayModeBar': True,
+        'displaylogo': False,
+        'modeBarButtonsToRemove': ['pan2d', 'lasso2d', 'select2d']
+    }
     
-    # Convert to base64
-    buffer = io.BytesIO()
-    plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
-    buffer.seek(0)
-    img_base64 = base64.b64encode(buffer.read()).decode()
-    plt.close()
-    
-    return f'<img src="data:image/png;base64,{img_base64}" style="max-width: 100%; height: auto;" alt="Performance Comparison - {folder_name}">'
+    return fig.to_html(include_plotlyjs='https://cdn.plot.ly/plotly-latest.min.js', 
+                      div_id="comparison-plot", config=config)
 
 
 def create_trend_plot(historical_data: List[Tuple[str, List[Dict]]], 
@@ -221,7 +281,7 @@ def create_trend_plot(historical_data: List[Tuple[str, List[Dict]]],
         test_filter: Optional test name to filter for
         
     Returns:
-        HTML string containing the embedded base64 image
+        HTML string containing the embedded plotly plot
     """
     if not historical_data:
         return '<div style="padding: 20px; text-align: center; color: #666;">No historical data available</div>'
@@ -247,7 +307,7 @@ def create_trend_plot(historical_data: List[Tuple[str, List[Dict]]],
     if not trend_data:
         return '<div style="padding: 20px; text-align: center; color: #666;">No trend data available</div>'
     
-    fig, ax = plt.subplots(figsize=(12, 6))
+    fig = go.Figure()
     
     # Color palette
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
@@ -261,34 +321,54 @@ def create_trend_plot(historical_data: List[Tuple[str, List[Dict]]],
         timestamps = [dp[0] for dp in data_points]
         performance = [dp[2] for dp in data_points]
         
-        ax.semilogy(range(len(timestamps)), performance,
-                   marker='o', markersize=8, linewidth=2,
-                   color=colors[i % len(colors)],
-                   label=f"{test_name} ({cores} cores)")
-        
-        # Set x-tick labels to timestamps
-        if i == 0:  # Only set once
-            ax.set_xticks(range(len(timestamps)))
-            ax.set_xticklabels(timestamps, rotation=45, ha='right')
+        fig.add_trace(go.Scatter(
+            x=timestamps,
+            y=performance,
+            mode='lines+markers',
+            name=f"{test_name} ({cores} cores)",
+            line=dict(color=colors[i % len(colors)], width=2),
+            marker=dict(size=8)
+        ))
     
     # Update layout
     title = f"Performance Trend - {test_filter}" if test_filter else "Performance Trends"
-    ax.set_xlabel('Timestamp', fontsize=12)
-    ax.set_ylabel('Zone Updates/sec/GPU', fontsize=12)
-    ax.set_title(title, fontsize=14, fontweight='bold')
-    ax.grid(True, which="both", ls="-", alpha=0.2)
+    fig.update_layout(
+        title=title,
+        xaxis_title="Timestamp",
+        yaxis_title="Zone Updates/sec/GPU",
+        xaxis=dict(
+            gridcolor='lightgray',
+            showgrid=True,
+            zeroline=False
+        ),
+        yaxis=dict(
+            type='log',
+            gridcolor='lightgray',
+            showgrid=True,
+            zeroline=False,
+            exponentformat='e'
+        ),
+        hovermode='closest',
+        template='plotly_white',
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=1.01
+        ),
+        height=500
+    )
     
-    # Position legend outside plot area
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=9)
+    config = {
+        'displayModeBar': True,
+        'displaylogo': False,
+        'modeBarButtonsToRemove': ['pan2d', 'lasso2d', 'select2d']
+    }
     
-    # Convert to base64
-    buffer = io.BytesIO()
-    plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
-    buffer.seek(0)
-    img_base64 = base64.b64encode(buffer.read()).decode()
-    plt.close()
-    
-    return f'<img src="data:image/png;base64,{img_base64}" style="max-width: 100%; height: auto;" alt="{title}">'
+    return fig.to_html(include_plotlyjs='https://cdn.plot.ly/plotly-latest.min.js', 
+                      div_id="trend-plot", config=config)
 
 
 def create_weak_scaling_plot(data_entries: List[Dict], baseline_cores: int = 1) -> str:
@@ -300,7 +380,7 @@ def create_weak_scaling_plot(data_entries: List[Dict], baseline_cores: int = 1) 
         baseline_cores: Number of cores to use as baseline (default: 1)
         
     Returns:
-        HTML string containing the embedded base64 image
+        HTML string containing the embedded plotly plot
     """
     if not data_entries:
         return '<div style="padding: 20px; text-align: center; color: #666;">No data available for weak scaling analysis</div>'
@@ -319,16 +399,21 @@ def create_weak_scaling_plot(data_entries: List[Dict], baseline_cores: int = 1) 
             test_groups[test_name] = []
         test_groups[test_name].append(entry)
     
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig = go.Figure()
     
     # Add ideal scaling line
     max_cores = max(e['cores'] for e in valid_entries)
     ideal_cores = [1, max_cores]
     ideal_efficiency = [100, 100]
     
-    ax.semilogx(ideal_cores, ideal_efficiency,
-                linestyle='--', linewidth=2, color='black',
-                label='Ideal Scaling')
+    fig.add_trace(go.Scatter(
+        x=ideal_cores,
+        y=ideal_efficiency,
+        mode='lines',
+        name='Ideal Scaling',
+        line=dict(color='black', width=2, dash='dash'),
+        showlegend=True
+    ))
     
     # Calculate and plot efficiency for each test
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
@@ -357,27 +442,53 @@ def create_weak_scaling_plot(data_entries: List[Dict], baseline_cores: int = 1) 
                 efficiency.append(eff)
         
         if cores and efficiency:
-            ax.semilogx(cores, efficiency,
-                       marker='o', markersize=8, linewidth=2,
-                       color=colors[i % len(colors)],
-                       label=test_name)
+            fig.add_trace(go.Scatter(
+                x=cores,
+                y=efficiency,
+                mode='lines+markers',
+                name=test_name,
+                line=dict(color=colors[i % len(colors)], width=2),
+                marker=dict(size=8)
+            ))
     
     # Update layout
-    ax.set_xlabel('Number of Cores', fontsize=12)
-    ax.set_ylabel('Efficiency (%)', fontsize=12)
-    ax.set_title('Weak Scaling Efficiency', fontsize=14, fontweight='bold')
-    ax.set_ylim(0, 120)
-    ax.grid(True, which="both", ls="-", alpha=0.2)
-    ax.legend(loc='lower left', fontsize=10)
+    fig.update_layout(
+        title="Weak Scaling Efficiency",
+        xaxis_title="Number of Cores",
+        yaxis_title="Efficiency (%)",
+        xaxis=dict(
+            type='log',
+            gridcolor='lightgray',
+            showgrid=True,
+            zeroline=False
+        ),
+        yaxis=dict(
+            gridcolor='lightgray',
+            showgrid=True,
+            zeroline=False,
+            range=[0, 120]
+        ),
+        hovermode='closest',
+        template='plotly_white',
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=0.99,
+            xanchor="right",
+            x=0.99
+        ),
+        height=500
+    )
     
-    # Convert to base64
-    buffer = io.BytesIO()
-    plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
-    buffer.seek(0)
-    img_base64 = base64.b64encode(buffer.read()).decode()
-    plt.close()
+    config = {
+        'displayModeBar': True,
+        'displaylogo': False,
+        'modeBarButtonsToRemove': ['pan2d', 'lasso2d', 'select2d']
+    }
     
-    return f'<img src="data:image/png;base64,{img_base64}" style="max-width: 100%; height: auto;" alt="Weak Scaling Efficiency">'
+    return fig.to_html(include_plotlyjs='https://cdn.plot.ly/plotly-latest.min.js', 
+                      div_id="weak-scaling-plot", config=config)
 
 
 if __name__ == "__main__":
