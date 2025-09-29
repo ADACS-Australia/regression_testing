@@ -1,0 +1,1 @@
+command="bash -l -c 'set -e; cd ${HOME}/src/cas/quokka/remote; [ -f setup/env.sh ] && source setup/env.sh; exec python regression_testing/regtest.py'",restrict ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFG21CqFMHf3gAt6dui9XkGbXDjenzvUJkgiRCYNQJK9 quokka

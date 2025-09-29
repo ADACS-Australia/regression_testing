@@ -1,215 +1,491 @@
-# Batch Job Testing with Regression Testing Suite
-
-This document describes how to use the batch job testing capabilities of the regression testing suite, which integrates with the hpc_performance_testing Python package.
-
-The regression testing suite traditionally uses INI format configuration files, while the hpc_performance_testing package uses YAML format. The batch job commands handle this conversion automatically - you provide an INI file, and it gets converted to YAML internally for hpc_performance_testing compatibility.
+# Quokka Regression Testing Documentation
 
 ## Quick Start
 
-Example configuration files are provided for the Ngarrgu-Tindebeek (NT) HPC system:
-- **`config_nt.ini`** - Example INI configuration file pre-configured for Ngarrgu-Tindebeek
-- **`env_setup_ucx.sh`** - Environment setup script for loading required modules on Ngarrgu-Tindebeek
-
-To run regression tests as batch jobs on an HPC cluster, follow these steps:
+Run regression tests on HPC clusters:
 
 ```bash
-# 1. Setup the environment (must be sourced, not executed)
-source regtest.setup.sh config_nt.ini batch_test/
+# 1. Setup environment (load modules and activate venv)
+source setup/env_setup_ucx.sh
+source /home/agray/src/cas/quokka/mk2025a/.venv/bin/activate
 
-# 2. Submit batch jobs to the cluster
-python regtest.py submit config_nt.ini batch_test/
+# 2. Setup test environment (creates work directory structure)
+regression_testing/regtest.py setup config_nt.ini
 
-# 3. Check job status
-python regtest.py check config_nt.ini batch_test/
+# 3. Submit batch jobs to cluster
+regression_testing/regtest.py submit config_nt.ini
 
-# 4. Extract results after jobs complete
-python regtest.py extract config_nt.ini batch_test/
+# 4. Check job status (can run multiple times)
+regression_testing/regtest.py check config_nt.ini
 
-# 5. Generate web report
-python regtest.py www config_nt.ini batch_test/
+# 5. Extract results after jobs complete
+regression_testing/regtest.py extract config_nt.ini
+
+# 6. Generate web report
+regression_testing/regtest.py www
+
+# 7. View results
+firefox www/index.html
 ```
 
-The `batch_test/` directory is optional and defaults to `./` if omitted.
+## A. Setup Virtual Environment
 
-**Note for Ngarrgu-Tindebeek users**: The provided `config_nt.ini` and `env_setup_ucx.sh` files are ready to use. Simply adjust the paths in `config_nt.ini` to match your setup locations if needed.
+### Option 1: Using mk2025a virtual environment
 
-## INI File Configuration
+The mk2025a repository provides a pre-configured virtual environment:
 
-The following variables must be added to the `[main]` section of your INI file for batch job testing:
+```bash
+# Navigate to mk2025a directory
+cd /home/agray/src/cas/quokka/mk2025a
 
-### Required Variables
+# Create virtual environment from pyproject.toml
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
 
-- **`useBatch`**: Set to `True` to enable batch job mode. This triggers the use of hpc_performance_testing for job submission instead of local execution.
+# The environment includes:
+# - hpc_performance_testing (for batch job management)
+# - pandas, numpy (for data processing)
+# - matplotlib (for plotting)
+# - pyyaml (for configuration)
+```
 
-### Optional Variables
+### Option 2: Using regression_testing requirements
 
-- **`setupFromFolder`**: Path to a directory containing environment setup scripts (`env_*.sh`) and test input files (`tests_input/`). The environment script will be sourced to load necessary modules.
+Create a minimal environment for regression testing only:
 
-- **`virtualEnvironment`**: Path to a Python virtual environment to activate. This should contain the hpc_performance_testing package and other dependencies.
+```bash
+# Navigate to regression testing directory
+cd /home/agray/src/cas/quokka/work/regression_testing
 
-### HPC Configuration
+# Create and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
 
-- **`cluster`**: Name of the HPC cluster (e.g., `NT`, `setonix`, `gadi`)
-- **`scheduler`**: Job scheduler type (e.g., `slurm`, `pbs`)
-- **`gpu_build`**: GPU build type if applicable (e.g., `cuda`, `hip`)
-- **`shell`**: Shell to use for job scripts (e.g., `/bin/bash`)
+# Install requirements
+pip install -r requirements.txt
+```
 
-### Path Configuration
+## B. Setup authorized_keys for Remote Execution
 
-- **`working_dir`**: Working directory for the batch job (usually `./`)
-- **`environment`**: Name of environment setup script
-- **`test_inputs`**: Path to test input files directory
+The regression testing system can be triggered remotely using SSH with restricted keys. This allows CI systems or remote users to run tests securely.
 
-### Job Settings
+### Example authorized_keys entry:
 
-- **`ntasks_per_node`**: Number of MPI tasks per node
-- **`mem_per_node`**: Memory allocation per node (e.g., `4G`)
-- **`scaling_strategy`**: Scaling strategy for tests (e.g., `weak_3d`)
-- **`min_cores`**: Minimum number of cores for scaling tests
-- **`max_cores`**: Maximum number of cores for scaling tests
+A complete example is provided in `authorized_keys_example`:
 
-## Command Descriptions
+```
+command="bash -l -c 'set -e; cd ${HOME}/src/cas/quokka/remote; [ -f setup/env.sh ] && source setup/env.sh; exec python regression_testing/regtest.py'",restrict ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFG21CqFMHf3gAt6dui9XkGbXDjenzvUJkgiRCYNQJK9 quokka
+```
 
-### `source regtest.setup.sh config.ini [work_dir/]`
+### Key components explained:
 
-This command prepares the environment for batch job testing. It must be sourced (not executed) to preserve environment changes. The script performs the following actions:
+1. **`command="..."`** - Restricts this SSH key to only execute the specified command
+   - `bash -l -c` - Runs bash as a login shell to load user environment
+   - `set -e` - Exit immediately if any command fails
+   - `cd ${HOME}/src/cas/quokka/remote` - Change to the remote working directory
+   - `[ -f setup/env.sh ] && source setup/env.sh` - Source environment setup if it exists
+   - `exec python regression_testing/regtest.py` - Execute regtest.py (replaces shell process)
 
-1. Creates the work directory if it doesn't exist
-2. Sources environment module scripts from the `setupFromFolder` path specified in the INI file
-3. Deactivates any currently active Python virtual environment and activates the one specified in `virtualEnvironment`
-4. Copies the environment setup script and `tests_input` folder to the work directory (without overwriting existing files)
-5. Verifies that the `hpc_performance_testing` Python module is available
+2. **`restrict`** - Modern SSH restriction (equivalent to combining the following legacy options):
+   - `no-port-forwarding` - Prevents SSH port forwarding
+   - `no-X11-forwarding` - Prevents X11 display forwarding  
+   - `no-agent-forwarding` - Prevents SSH agent forwarding
+   - `no-pty` - Prevents interactive terminal allocation
+   - `no-user-rc` - Prevents execution of ~/.ssh/rc
 
-The script provides clear status messages and will stop with an error if any required resources are not found.
+3. **SSH key** - The public key (ssh-ed25519 or ssh-rsa format)
 
-### `regtest.py submit config.ini [work_dir/]`
+### Setting up the restricted key:
 
-The submit command initiates batch job submission to the HPC cluster. This command:
+1. **Add to ~/.ssh/authorized_keys**:
+   ```bash
+   cat authorized_keys_example >> ~/.ssh/authorized_keys
+   ```
 
-1. Validates that `useBatch = True` is set in the INI file
-2. Creates the work directory if it doesn't exist
-3. Converts the INI configuration to YAML format required by hpc_performance_testing
-4. Saves the YAML configuration as `config.yaml` in the work directory
-5. Calls the hpc_performance_testing `submit_jobs()` function to submit jobs to the cluster
-6. The hpc_performance_testing package creates a `test_instance.yaml` file containing runtime information and job IDs
+2. **Adjust the path in the command**:
+   - Replace `${HOME}/src/cas/quokka/remote` with your actual work directory
+   - The example uses `remote/` subdirectory for isolation
 
-After submission, jobs will be queued in the cluster's scheduler and will run when resources become available. Note that `test_instance.yaml` is different from `config.yaml` - it contains runtime metadata about the submitted jobs rather than the test configuration.
+3. **Create the environment setup** (optional):
+   ```bash
+   # Create setup/env.sh in your work directory
+   cat > ~/src/cas/quokka/remote/setup/env.sh << 'EOF'
+   #!/bin/bash
+   module load gcc/11.2.0
+   module load cuda/12.0
+   source /home/agray/src/cas/quokka/mk2025a/.venv/bin/activate
+   EOF
+   ```
 
-### `regtest.py check config.ini [work_dir/]`
+### Valid remote commands:
 
-The check command monitors the status of submitted batch jobs. This command:
+When the SSH key is properly configured, remote commands are automatically passed to regtest.py via SSH_ORIGINAL_COMMAND:
 
-1. Reads the `test_instance.yaml` file created during submission
-2. Calls the hpc_performance_testing `check_jobs()` function to query job status from the scheduler
-3. Reports the current status (e.g., `WAIT`, `RUNNING`, `COMPLETE`, `FAILED`)
+```bash
+# From remote system (the SSH command is parsed from SSH_ORIGINAL_COMMAND)
+ssh -i ~/.ssh/quokka_key agray@hpc.example.com "submit config_nt.ini"
+ssh -i ~/.ssh/quokka_key agray@hpc.example.com "check config_nt.ini" 
+ssh -i ~/.ssh/quokka_key agray@hpc.example.com "extract config_nt.ini"
+ssh -i ~/.ssh/quokka_key agray@hpc.example.com "www"  # INI file optional for www
+ssh -i ~/.ssh/quokka_key agray@hpc.example.com "setup config_nt.ini"
+```
 
-This command can be run repeatedly to monitor job progress without affecting the running jobs.
+The regtest.py script automatically detects it's running via SSH and parses the command from the SSH_ORIGINAL_COMMAND environment variable.
 
-### `regtest.py extract config.ini [work_dir/]`
+### Security notes:
 
-The extract command processes completed job outputs to generate performance metrics. This command:
+- The `restrict` option is the modern way to apply all security restrictions at once
+- The command restriction ensures the SSH key can ONLY run regtest.py
+- Using `exec` replaces the shell process, preventing shell escape attempts
+- The `set -e` ensures the command chain stops on any error
+- Environment setup is optional but allows module loading if needed
 
-1. Verifies that jobs have completed by checking for the `test_instance.yaml` file
-2. Calls the hpc_performance_testing `extract_results()` function to parse job output files
-3. Generates three parquet files in `work_dir/performance_test/TIMESTAMP/results/` (where TIMESTAMP is a date/time string like `20250821182621`):
-   - `job_submission.parquet`: Job submission metadata (created at submit time)
-   - `job_output.parquet`: Performance metrics and timing data (created at extract time)
-   - `job_exit_status.parquet`: Job completion status and exit codes (created when jobs complete)
-4. Reports the location of generated files
+## C. Folder Structure
 
-The extract command should only be run after jobs have completed (status shows `COMPLETE`). The performance data is stored in the industry-standard parquet format for efficient storage and processing.
+The regression testing system uses the following directory structure:
 
-### `regtest.py www config.ini [work_dir/]`
+```
+quokka/
+├── work/                          # Main working directory
+│   ├── regression_testing/        # Testing scripts and tools
+│   │   ├── regtest.py            # Main testing script
+│   │   ├── web_generator.py      # Web report generation
+│   │   ├── plotting.py           # Performance plotting
+│   │   └── web_utils.py          # Web utilities
+│   │
+│   ├── config_nt.ini             # Configuration for test suite
+│   ├── config_nt_A.ini           # Variant A configuration
+│   ├── config_nt_B.ini           # Variant B configuration
+│   │
+│   ├── A/                        # Test variant A results
+│   │   └── performance_test/
+│   │       └── 20250831123050/   # Timestamp directory
+│   │           ├── quokka/       # Quokka source (git repo)
+│   │           ├── results/      # Test output files
+│   │           │   ├── job_submission.parquet
+│   │           │   ├── job_output.parquet
+│   │           │   └── job_exit_status.parquet
+│   │           └── test_*/       # Individual test directories
+│   │
+│   ├── B/                        # Test variant B results
+│   ├── C/                        # Test variant C results
+│   └── reference/                # Reference baseline results
+│
+├── www/                          # Web output directory
+│   ├── index.html               # Main dashboard
+│   ├── A/                       # Variant A web pages
+│   │   ├── index.html          # Folder summary
+│   │   ├── trends.html         # Performance trends
+│   │   └── 20250831123050/     # Timestamp pages
+│   │       └── index.html
+│   ├── B/                       # Variant B web pages
+│   ├── C/                       # Variant C web pages
+│   └── reference/               # Reference web pages
+│
+├── setup/                       # Environment setup scripts
+│   ├── env_setup_ucx.sh       # UCX-enabled MPI environment
+│   └── env_setup_ompi.sh      # OpenMPI environment
+│
+└── mk2025a/                    # Performance testing package
+    ├── pyproject.toml          # Python package configuration
+    └── .venv/                  # Virtual environment
+```
 
-The www command generates an HTML report from the extracted performance data. This command:
+### Key directories:
+- **work/**: Contains all test configurations and results
+- **www/**: Generated HTML reports and visualizations
+- **setup/**: Module loading and environment scripts
+- **mk2025a/**: Python package for HPC performance testing
 
-1. Reads the parquet files generated by the extract command
-2. Processes performance metrics including:
-   - Wall time for each test
+## D. Running regtest Commands
+
+### regtest.py setup
+
+Prepares the test environment:
+```bash
+regression_testing/regtest.py setup config_nt.ini
+```
+
+Actions:
+1. Creates work directory structure
+2. Validates configuration file
+3. Copies test inputs to work directory
+4. Prepares build directories
+
+### regtest.py submit
+
+Submits batch jobs to the HPC scheduler:
+```bash
+regression_testing/regtest.py submit config_nt.ini
+```
+
+Actions:
+1. Converts INI config to YAML for hpc_performance_testing
+2. Creates job submission scripts
+3. Submits jobs to scheduler (SLURM/PBS)
+4. Records job IDs in test_instance.yaml
+5. Creates job_submission.parquet
+
+### regtest.py check
+
+Monitors job status:
+```bash
+regression_testing/regtest.py check config_nt.ini
+```
+
+Actions:
+1. Queries scheduler for job status
+2. Reports: WAIT, RUNNING, COMPLETE, FAILED
+3. Updates job_exit_status.parquet when complete
+4. Safe to run multiple times
+
+### regtest.py extract
+
+Processes completed job outputs:
+```bash
+regression_testing/regtest.py extract config_nt.ini
+```
+
+Actions:
+1. Parses job output files
+2. Extracts performance metrics
+3. Creates job_output.parquet with:
    - Zone updates per second
-   - Microseconds per update
-   - Scaling efficiency calculations
-3. Creates an HTML report at `work_dir/www/index.html` containing:
-   - Summary of test results (passed/failed counts)
-   - Detailed performance table for each test
-   - Scaling efficiency percentages
-   - Visual status indicators
-4. Provides the path to view the report in a web browser
-
-## Notes
-
-### Example Files for Ngarrgu-Tindebeek (NT)
-
-Two example files are provided specifically configured for the Ngarrgu-Tindebeek HPC system:
-
-1. **`config_nt.ini`**: A complete INI configuration file with settings appropriate for Ngarrgu-Tindebeek, including:
-   - SLURM scheduler configuration
-   - CUDA GPU build settings
-   - UCX-enabled MPI environment
-   - Appropriate memory and processor allocations
-
-2. **`env_setup_ucx.sh`**: Environment setup script that loads the required modules on Ngarrgu-Tindebeek, including:
-   - Compiler modules
-   - MPI libraries with UCX support
-   - CUDA toolkit
-   - Other dependencies required for Quokka
-
-Users on other HPC systems can use these files as templates, modifying the cluster name, scheduler type, and environment modules as appropriate for their system.
-
-### Important Considerations
-
-1. **Environment Persistence**: The `regtest.setup.sh` script must be sourced (`source` command) rather than executed directly. This ensures that environment changes (module loads, virtual environment activation) persist in your shell session.
-
-2. **Job Dependencies**: Commands should be run in order: setup → submit → check → extract → www. Each step depends on outputs from the previous step.
-
-3. **Cluster Resources**: Job execution time depends on cluster queue wait times and resource availability. Use the check command to monitor progress.
-
-4. **File Preservation**: The setup script will not overwrite existing files in the work directory. To update environment scripts or test inputs, remove them from the work directory first.
-
-5. **Performance Metrics**: The performance data extracted includes:
-   - Total zone updates performed
-   - Updates per second (throughput)
-   - Time per update (latency)
+   - Wall time measurements
+   - Scaling efficiency
    - Memory usage
-   - CPU efficiency
 
-6. **Scaling Analysis**: The www report automatically calculates scaling efficiency by comparing multi-processor performance against a baseline (typically the single-processor run).
+### regtest.py www
 
-### Troubleshooting
+Generates web reports:
+```bash
+regression_testing/regtest.py www
+```
 
-- If `hpc_performance_testing` module is not found, ensure the package is installed in your Python environment
-- If jobs fail to submit, check that environment modules are loaded correctly and the cluster configuration matches your system
-- Exit codes in format "0:0" indicate successful completion; other values indicate errors
-- Check job output files in `work_dir/performance_test/TIMESTAMP/results/test_name/` for detailed error messages
+Actions:
+1. Scans for all INI files with useBatch=True
+2. Aggregates data from all test folders
+3. Creates HTML pages with:
+   - Performance plots
+   - Comparison tables
+   - Trend analysis
+   - Test status indicators
+4. Includes Quokka version in titles
 
-### Example INI File
+Note: INI file is optional for www command - it will discover all test folders automatically.
 
+## E. Publishing Web Pages to GitHub Pages
+
+### 1. Setup GitHub repository
+
+Create a repository for hosting the web pages:
+```bash
+cd /home/agray/src/cas/quokka
+git clone https://github.com/username/quokka-regression-results.git
+cd quokka-regression-results
+```
+
+### 2. Enable GitHub Pages
+
+In repository settings:
+1. Go to Settings → Pages
+2. Source: Deploy from a branch
+3. Branch: main (or gh-pages)
+4. Folder: / (root)
+
+### 3. Copy and commit web pages
+
+```bash
+# Copy generated web pages to repository
+cp -r /home/agray/src/cas/quokka/www/* ./
+
+# Add and commit
+git add .
+git commit -m "Update regression test results $(date +%Y-%m-%d)"
+
+# Push to GitHub
+git push origin main
+```
+
+### 4. Automate with script
+
+Create `publish_results.sh`:
+```bash
+#!/bin/bash
+RESULTS_REPO="/home/agray/src/cas/quokka/quokka-regression-results"
+WWW_DIR="/home/agray/src/cas/quokka/www"
+
+cd "$RESULTS_REPO"
+git pull
+cp -r "$WWW_DIR"/* ./
+git add .
+git commit -m "Auto-update: $(date +%Y-%m-%d\ %H:%M:%S)"
+git push
+```
+
+### 5. View published pages
+
+After pushing, pages will be available at:
+```
+https://username.github.io/quokka-regression-results/
+```
+
+## F. Simple CI Setup
+
+### Basic CI workflow to trigger regression tests
+
+#### 1. GitHub Actions example (.github/workflows/regression.yml):
+
+```yaml
+name: Run Regression Tests
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM
+  workflow_dispatch:      # Manual trigger
+
+jobs:
+  trigger-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger regression tests
+        env:
+          SSH_KEY: ${{ secrets.HPC_SSH_KEY }}
+        run: |
+          echo "$SSH_KEY" > ssh_key
+          chmod 600 ssh_key
+          
+          # Submit tests
+          ssh -i ssh_key -o StrictHostKeyChecking=no \
+            agray@hpc.example.com "submit config_nt.ini"
+          
+          # Wait and check (simplified - real CI would loop)
+          sleep 300
+          ssh -i ssh_key -o StrictHostKeyChecking=no \
+            agray@hpc.example.com "check config_nt.ini"
+```
+
+#### 2. GitLab CI example (.gitlab-ci.yml):
+
+```yaml
+stages:
+  - test
+  - report
+
+run-regression:
+  stage: test
+  script:
+    - echo "$HPC_SSH_KEY" > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh agray@hpc.example.com "submit config_nt.ini"
+    - sleep 300
+    - ssh agray@hpc.example.com "check config_nt.ini"
+  only:
+    - schedules
+    - main
+
+generate-report:
+  stage: report
+  script:
+    - ssh agray@hpc.example.com "extract config_nt.ini"
+    - ssh agray@hpc.example.com "www"
+  needs: ["run-regression"]
+```
+
+#### 3. Simple cron job on HPC:
+
+```bash
+# Add to crontab with: crontab -e
+# Run regression tests daily at 2 AM
+0 2 * * * cd /home/agray/src/cas/quokka/work && ./run_regression.sh
+
+# run_regression.sh:
+#!/bin/bash
+source setup/env_setup_ucx.sh
+source mk2025a/.venv/bin/activate
+
+regression_testing/regtest.py submit config_nt.ini
+# Wait for completion (check every 5 minutes for 2 hours)
+for i in {1..24}; do
+  sleep 300
+  status=$(regression_testing/regtest.py check config_nt.ini | grep "Status:")
+  if [[ $status == *"COMPLETE"* ]]; then
+    break
+  fi
+done
+
+regression_testing/regtest.py extract config_nt.ini
+regression_testing/regtest.py www
+
+# Optional: publish results
+./publish_results.sh
+```
+
+### Security considerations for CI:
+
+1. Use dedicated SSH keys with command restrictions
+2. Store keys as encrypted secrets in CI platform
+3. Limit key permissions to only required commands
+4. Monitor usage through HPC logs
+5. Rotate keys periodically
+
+## Appendix: Configuration File Examples
+
+### Minimal config_nt.ini:
 ```ini
 [main]
 useBatch = True
-setupFromFolder = /home/user/quokka/setup
-virtualEnvironment = /home/user/quokka/venv
-
 cluster = NT
 scheduler = slurm
 gpu_build = cuda
-shell = /bin/bash
-
-working_dir = ./
-environment = env_setup_ucx.sh
-test_inputs = ./tests_input
-
 ntasks_per_node = 4
-mem_per_node = 4G
-scaling_strategy = weak_3d
-min_cores = 1
-max_cores = 10
+max_cores = 64
 
-[test_hydro3d_blast]
-name = test_hydro3d_blast
+[test1]
+name = hydro_blast
 target = HydroBlast3D/test_hydro3d_blast
-inputFile = blast_32.in
-cmake_cache = -DCMAKE_BUILD_TYPE=Release -DQUOKKA_PYTHON=OFF -DAMReX_SPACEDIM=3
+inputFile = blast.in
 walltime = 00:10:00
-mem_per_node = 4G
 ```
+
+### Environment setup script (env_setup_ucx.sh):
+```bash
+#!/bin/bash
+module purge
+module load gcc/11.2.0
+module load cuda/12.0
+module load openmpi/4.1.4-ucx
+module load hdf5/1.14.0
+
+export OMP_NUM_THREADS=1
+export OMPI_MCA_btl=^openib
+```
+
+## Troubleshooting
+
+### Common issues:
+
+1. **Module not found**: Ensure environment script is sourced before running regtest.py
+2. **Jobs stuck in WAIT**: Check cluster queue limits and resource availability
+3. **Missing parquet files**: Ensure extract command completed successfully
+4. **Web pages not updating**: Clear browser cache or use private/incognito mode
+5. **SSH command fails**: Verify authorized_keys entry and key permissions (600)
+
+### Debug commands:
+
+```bash
+# Check job details
+squeue -u $USER
+
+# View job output
+cat A/performance_test/*/results/test_*/stdout.txt
+
+# Verify parquet files
+ls -la A/performance_test/*/results/*.parquet
+
+# Test SSH restricted command
+ssh -v agray@hpc.example.com "check config_nt.ini"
+```
+
+For additional help, check the regression_testing logs in `runtime_err.log` or contact the Quokka development team.
