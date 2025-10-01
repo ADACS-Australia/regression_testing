@@ -3,12 +3,13 @@
 ## Setup
 
 The script `quokka-setup.sh` illustrates the configuration of regression testing
-*via* a batch queue. This file explains how this script works.
+*via* a GitHub action and a batch queue. This file explains how this script works.
 `quokka-setup.sh` has been tested on Ngarrgu-Tindebeek. An environment configuration
-script, QUOKKA input files, and test configurations to illustrate the tests
+script, QUOKKA input files, and test configurations to illustrate the setup
 are provided in `quokka-setup.tar.xz`. To use these files put them together
-in an empty folder on Ngarrgu-Tindebeek and run the script. Alternative
-environment module scripts are provided in the `hpc_performance_testing` repository at 
+in an empty folder on Ngarrgu-Tindebeek and run the `quokka-setup.sh` script. 
+Alternative environment module scripts are provided in the `hpc_performance_testing` 
+repository at
 
 ```
 https://github.com/ADACS-Australia/MKrumholz_2025a.git
@@ -71,12 +72,12 @@ git clone -b "${REG_TEST_BRANCH}" "${REG_TEST}" regression_testing
 Place test configuration INI files in the folder where the above setup
 was performed. Example files are provided in `quokka-setup.tar.xz`. These
 files are identical except for their working folders. Multiple configurations
-are included to show thow these are handled in the web report.
-
+are included to show how these are handled.
 
 ### Setup authorized_keys for Remote Execution
 
-The regression testing system can be triggered remotely using SSH with restricted keys. This allows CI systems or remote users to run tests securely.
+The regression testing system can be triggered remotely using SSH with restricted keys.
+This allows CI systems or remote users to run tests securely.
 
 #### Example authorized_keys entry:
 
@@ -85,6 +86,9 @@ A complete example is provided in `authorized_keys_example`:
 ```
 command="bash -l -c 'set -e; cd ${HOME}/src/cas/quokka/remote; [ -f setup/env.sh ] && source setup/env.sh; exec python regression_testing/regtest.py'",restrict ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFG21CqFMHf3gAt6dui9XkGbXDjenzvUJkgiRCYNQJK9 quokka
 ```
+
+As discussed below, the path and key in this will have to be adjusted.
+
 Some notes on security:
 
 - The `restrict` option is the modern way to apply all security restrictions at once
@@ -148,6 +152,8 @@ Host quokka
     Port            22
     IdentityFile    ~/.ssh/cas/id_ed25519-quokka
 ```
+
+Here you will need to replace the settings with your username and private key file.
 
 #### Valid remote commands
 
@@ -253,7 +259,7 @@ Note: INI file is optional for www command - it will discover all test folders a
 ## Simple CI Setup
 
 A version of `quokka` with a GitHub action is configured
-at `https://github.com/gusgw/quokka-ci-demo/`. This has
+at `https://github.com/ADACS-Australia/quokka-ci-demo/`. This has
 the following file at `.github/workflows/regression-submit.yml`.
 
 ```
@@ -300,7 +306,9 @@ jobs:
 
 ### Setting up GitHub Secrets for SSH Access
 
-To securely connect to your HPC cluster from GitHub Actions, you need to configure two secrets: `QUOKKA_SSH_KEY` and `QUOKKA_KNOWN_HOSTS`. These secrets store sensitive SSH credentials securely.
+To securely connect to your HPC cluster from GitHub Actions, you need to configure two secrets:
+
+`QUOKKA_SSH_KEY` and `QUOKKA_KNOWN_HOSTS`. These secrets store sensitive SSH credentials securely.
 
 #### Step-by-step setup:
 
